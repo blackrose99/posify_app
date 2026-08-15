@@ -192,7 +192,6 @@ Future<Uint8List> buildTicketPdf(TicketData data) async {
                         style: const pw.TextStyle(fontSize: 10)),
                   pw.Text('Fecha: ${formatFechaTicket(data.fecha)}',
                       style: const pw.TextStyle(fontSize: 10)),
-                  pw.Text('Pedido #${data.pedidoId}', style: const pw.TextStyle(fontSize: 10)),
                 ],
               ),
             ),

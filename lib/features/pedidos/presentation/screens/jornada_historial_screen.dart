@@ -61,10 +61,8 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
     if (device == null) return false;
 
     final bytes = <int>[
-      ...utf8.encode('$contenido\n\n'),
-      0x1D,
-      0x56,
-      0x00,
+      0x1B, 0x40, // ESC @ (Reset printer)
+      ...utf8.encode('$contenido\n\n\n\n'),
     ];
     return _printerService.printBytes(device, bytes);
   }
@@ -436,6 +434,52 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
     );
   }
 
+  Future<void> _eliminarJornada() async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Eliminar jornada'),
+        content: Text(
+          '¿Estás seguro de eliminar la "${widget.jornadaNombre}"? Esta acción borrará permanentemente la jornada y todos sus pedidos e ítems asociados.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Sí, eliminar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar != true) return;
+
+    await _db.transaction(() async {
+      await _db.customStatement(
+        'DELETE FROM items_pedido WHERE pedido_id IN (SELECT id FROM pedidos WHERE jornada_id = ?)',
+        [widget.jornadaId],
+      );
+      await _db.customStatement(
+        'DELETE FROM pedidos WHERE jornada_id = ?',
+        [widget.jornadaId],
+      );
+      await _db.customStatement(
+        'DELETE FROM jornadas WHERE id = ?',
+        [widget.jornadaId],
+      );
+    });
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Jornada eliminada correctamente.')),
+    );
+    Navigator.pop(context, true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final pedidosFiltrados = _pedidos.where((p) {
@@ -455,6 +499,8 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
         iconTheme: const IconThemeData(color: Colors.white),
         title: Text(
           'Historial ${widget.jornadaNombre}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: const TextStyle(color: Colors.white),
         ),
         actions: [
@@ -472,6 +518,9 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                 case 'txt':
                   _descargarInformePos();
                   break;
+                case 'eliminar':
+                  _eliminarJornada();
+                  break;
               }
             },
             itemBuilder: (context) => const [
@@ -486,6 +535,17 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
               PopupMenuItem<String>(
                 value: 'txt',
                 child: Text('Descargar TXT'),
+              ),
+              PopupMenuDivider(),
+              PopupMenuItem<String>(
+                value: 'eliminar',
+                child: Row(
+                  children: [
+                    Icon(Icons.delete_outline, color: AppColors.error, size: 20),
+                    SizedBox(width: 8),
+                    Text('Eliminar jornada', style: TextStyle(color: AppColors.error)),
+                  ],
+                ),
               ),
             ],
           ),
@@ -519,23 +579,26 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                         ],
                       ),
                       const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          _ResumenMeta(
-                            label: 'Pedidos: ${_resumen.totalPedidos}',
-                            color: AppColors.textPrimary,
-                          ),
-                          const SizedBox(width: 8),
-                          _ResumenMeta(
-                            label: 'Cerrados: ${_resumen.totalCerrados}',
-                            color: AppColors.success,
-                          ),
-                          const SizedBox(width: 8),
-                          _ResumenMeta(
-                            label: 'Cancelados: ${_resumen.totalCancelados}',
-                            color: AppColors.error,
-                          ),
-                        ],
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            _ResumenMeta(
+                              label: 'Pedidos: ${_resumen.totalPedidos}',
+                              color: AppColors.textPrimary,
+                            ),
+                            _ResumenMeta(
+                              label: 'Cerrados: ${_resumen.totalCerrados}',
+                              color: AppColors.success,
+                            ),
+                            _ResumenMeta(
+                              label: 'Cancelados: ${_resumen.totalCancelados}',
+                              color: AppColors.error,
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 8),
                       Align(
@@ -605,29 +668,23 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                                   children: [
                                     Row(
                                       children: [
-                                        if (p.numeroTurno > 0) ...[
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 8, vertical: 3),
-                                            decoration: BoxDecoration(
-                                              color: AppColors.primary,
-                                              borderRadius:
-                                                  BorderRadius.circular(100),
-                                            ),
-                                            child: Text(
-                                              codigoTurnoDesde(p.numeroTurno),
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w800,
-                                              ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 10, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.primary,
+                                            borderRadius:
+                                                BorderRadius.circular(100),
+                                          ),
+                                          child: Text(
+                                            codigoTurnoDesde(p.numeroTurno > 0 ? p.numeroTurno : p.id),
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w800,
                                             ),
                                           ),
-                                          const SizedBox(width: 8),
-                                        ],
-                                        Text('Pedido #${p.id}',
-                                            style: const TextStyle(
-                                                fontWeight: FontWeight.w700)),
+                                        ),
                                         const Spacer(),
                                         Text(
                                           p.estado,
@@ -760,7 +817,7 @@ class _ResumenCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(12),
@@ -768,11 +825,20 @@ class _ResumenCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(label, style: const TextStyle(color: AppColors.textMuted)),
-            const SizedBox(height: 4),
             Text(
-              _formatMoney(value),
-              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+            ),
+            const SizedBox(height: 4),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                _formatMoney(value),
+                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17),
+              ),
             ),
           ],
         ),

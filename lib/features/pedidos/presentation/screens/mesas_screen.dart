@@ -434,6 +434,67 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     await _cargarDatos();
   }
 
+  Future<void> _eliminarJornada(_JornadaResumen jornada) async {
+    if (jornada.estado == 'abierta') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se puede borrar una jornada abierta. Debes cerrarla primero.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Eliminar jornada'),
+        content: Text(
+          '¿Estás seguro de eliminar la "${jornada.nombre}"? Esta acción borrará permanentemente la jornada y todos sus pedidos e ítems asociados.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Sí, eliminar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar != true) return;
+
+    await _db.transaction(() async {
+      await _db.customStatement(
+        'DELETE FROM items_pedido WHERE pedido_id IN (SELECT id FROM pedidos WHERE jornada_id = ?)',
+        [jornada.id],
+      );
+      await _db.customStatement(
+        'DELETE FROM pedidos WHERE jornada_id = ?',
+        [jornada.id],
+      );
+      await _db.customStatement(
+        'DELETE FROM jornadas WHERE id = ?',
+        [jornada.id],
+      );
+    });
+
+    if (_jornadaSeleccionada?.id == jornada.id) {
+      _jornadaSeleccionada = null;
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Jornada eliminada correctamente.')),
+    );
+    await _cargarDatos();
+  }
+
   Future<void> _crearPedido() async {
     final jornada = _jornadaSeleccionada;
     if (jornada == null || jornada.estado != 'abierta') return;
@@ -443,6 +504,12 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     final clienteCtrl = TextEditingController();
     final meseros = await _meserosConfigurados();
     String meseroSeleccionado = '';
+
+    final valorDomicilioConfig = double.tryParse(
+            await _leerConfig('valor_domicilio', fallback: '5000')) ??
+        5000.0;
+    final valorDomicilioCtrl =
+        TextEditingController(text: valorDomicilioConfig.toStringAsFixed(0));
 
     if (!mounted) return;
 
@@ -474,6 +541,17 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                         : 'Dirección o referencia',
                   ),
                 ),
+                if (tipo == 'domicilio') ...[
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: valorDomicilioCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Precio del domicilio (\$)',
+                      hintText: 'Ej: 5000',
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 TextField(
                   controller: clienteCtrl,
@@ -525,10 +603,9 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
 
     if (confirmar != true) return;
 
-    final valorDomicilioConfig = double.tryParse(
-            await _leerConfig('valor_domicilio', fallback: '5000')) ??
-        5000.0;
-    final valorDomicilio = tipo == 'domicilio' ? valorDomicilioConfig : 0.0;
+    final valorIngresado = double.tryParse(valorDomicilioCtrl.text.trim());
+    final valorDomicilio =
+        tipo == 'domicilio' ? (valorIngresado ?? valorDomicilioConfig) : 0.0;
 
     final maxTurnoRow = await _db.customSelect(
       'SELECT COALESCE(MAX(numero_turno), 0) AS max_turno FROM pedidos WHERE jornada_id = ?',
@@ -811,6 +888,53 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     }
   }
 
+  Future<void> _reabrirPedido(_PedidoResumen pedido) async {
+    if (_jornadaSeleccionada?.estado != 'abierta') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('No se puede reabrir un pedido de una jornada ya cerrada.'),
+        ),
+      );
+      return;
+    }
+
+    final codigo = codigoTurnoDesde(
+        pedido.numeroTurno > 0 ? pedido.numeroTurno : pedido.id);
+
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Reabrir pedido'),
+        content: Text(
+          '¿Deseas reabrir el pedido $codigo? El pedido cambiará a estado abierto para que puedas agregar más productos.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Reabrir pedido'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar != true) return;
+
+    await _actualizarEstadoPedido(pedido.id, 'abierto');
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Pedido $codigo reabierto correctamente.'),
+      ),
+    );
+    await _cargarDatos();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -852,28 +976,23 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                       Expanded(
                         child: SegmentedButton<String>(
                           style: ButtonStyle(
-                            visualDensity: VisualDensity.compact,
+                            visualDensity: VisualDensity.standard,
                             textStyle: WidgetStateProperty.all(
-                              const TextStyle(fontSize: 11),
+                              const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                             ),
                             padding: WidgetStateProperty.all(
-                              const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
-                              ),
+                              const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                             ),
-                            minimumSize:
-                                WidgetStateProperty.all(const Size(56, 30)),
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
                           segments: const [
                             ButtonSegment(
                               value: 'abiertas',
-                              label: Text('Abiertas'),
+                              label: Text('Abiertas', maxLines: 1, softWrap: false),
                             ),
                             ButtonSegment(
                               value: 'cerradas',
-                              label: Text('Cerradas'),
+                              label: Text('Cerradas', maxLines: 1, softWrap: false),
                             ),
                           ],
                           selected: {_vistaJornadas},
@@ -931,22 +1050,23 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                             },
                           ),
                           const SizedBox(height: 10),
-                          Row(
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
                             children: [
-                              if (_jornadaSeleccionada?.estado == 'abierta')
+                              if (_jornadaSeleccionada?.estado == 'abierta') ...[
                                 ElevatedButton.icon(
                                   onPressed: _crearPedido,
                                   icon: const Icon(Icons.receipt_long),
                                   label: const Text('Nuevo pedido'),
                                 ),
-                              const SizedBox(width: 8),
-                              if (_jornadaSeleccionada?.estado == 'abierta')
                                 OutlinedButton.icon(
                                   onPressed: () =>
                                       _cerrarJornada(_jornadaSeleccionada!),
                                   icon: const Icon(Icons.lock_outline),
                                   label: const Text('Cerrar jornada'),
                                 ),
+                              ],
                             ],
                           ),
                           const SizedBox(height: 10),
@@ -1014,19 +1134,11 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                                             children: [
                                               Row(
                                                 children: [
-                                                  if (pedido.numeroTurno > 0) ...[
-                                                    _TurnoBadge(
-                                                      numeroTurno:
-                                                          pedido.numeroTurno,
-                                                    ),
-                                                    const SizedBox(width: 8),
-                                                  ],
-                                                  Text(
-                                                    'Pedido #${pedido.id}',
-                                                    style: const TextStyle(
-                                                      fontWeight:
-                                                          FontWeight.w700,
-                                                    ),
+                                                  _TurnoBadge(
+                                                    numeroTurno:
+                                                        pedido.numeroTurno > 0
+                                                            ? pedido.numeroTurno
+                                                            : pedido.id,
                                                   ),
                                                   const SizedBox(width: 8),
                                                   _EstadoTag(
@@ -1125,14 +1237,33 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                                               ] else if (pedido.estado ==
                                                   'cerrado') ...[
                                                 const SizedBox(height: 10),
-                                                OutlinedButton.icon(
-                                                  onPressed: () =>
-                                                      _verTicket(pedido),
-                                                  icon: const Icon(
-                                                      Icons.receipt_long,
-                                                      size: 18),
-                                                  label: const Text(
-                                                      'Ver / reimprimir ticket'),
+                                                Wrap(
+                                                  spacing: 8,
+                                                  runSpacing: 8,
+                                                  children: [
+                                                    OutlinedButton.icon(
+                                                      onPressed: () =>
+                                                          _verTicket(pedido),
+                                                      icon: const Icon(
+                                                          Icons.receipt_long,
+                                                          size: 18),
+                                                      label: const Text(
+                                                          'Ver / reimprimir ticket'),
+                                                    ),
+                                                    if (_jornadaSeleccionada
+                                                            ?.estado ==
+                                                        'abierta')
+                                                      ElevatedButton.icon(
+                                                        onPressed: () =>
+                                                            _reabrirPedido(
+                                                                pedido),
+                                                        icon: const Icon(
+                                                            Icons.lock_open,
+                                                            size: 18),
+                                                        label: const Text(
+                                                            'Reabrir pedido'),
+                                                      ),
+                                                  ],
                                                 ),
                                               ],
                                             ],
@@ -1337,6 +1468,14 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                                         ),
                                       ),
                                       _EstadoTag(estado: j.estado),
+                                      const SizedBox(width: 4),
+                                      IconButton(
+                                        visualDensity: VisualDensity.compact,
+                                        tooltip: 'Eliminar jornada',
+                                        icon: const Icon(Icons.delete_outline,
+                                            color: AppColors.error, size: 20),
+                                        onPressed: () => _eliminarJornada(j),
+                                      ),
                                     ],
                                   ),
                                   const SizedBox(height: 10),

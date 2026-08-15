@@ -15,12 +15,14 @@ dependencies:
   drift_flutter: ^0.2.0
   sqlite3_flutter_libs: ^0.5.0
   get_it: ^8.0.0
+  permission_handler: ^11.3.1
   flutter_blue_plus: ^1.32.12
   esc_pos_utils_plus: ^2.0.2
   pdf: ^3.11.0
   printing: ^5.13.0
   share_plus: ^10.0.0
   file_picker: ^8.1.2
+  image: ^4.2.0
   path_provider: ^2.1.4
   csv: ^6.0.0
   uuid: ^4.4.2
