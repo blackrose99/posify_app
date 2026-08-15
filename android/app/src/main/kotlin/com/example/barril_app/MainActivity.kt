@@ -2,259 +2,234 @@ package com.example.barril_app
 
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothSocket
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import java.io.OutputStream
-import java.util.UUID
 
 class MainActivity : FlutterActivity() {
+
     private val TAG = "POS_BT"
     private val CHANNEL = "com.example.barril_app/bluetooth_printer"
-    private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
-    @Volatile
-    private var activeSocket: BluetoothSocket? = null
-    private var activeAddress: String? = null
+    // ── Referencia al Foreground Service ──────────────────────────────────
+    private var printerService: PrinterForegroundService? = null
+    private var serviceBound = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val b = binder as? PrinterForegroundService.PrinterBinder
+            printerService = b?.getService()
+            serviceBound = true
+            Log.i(TAG, "PrinterForegroundService vinculado a MainActivity")
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            printerService = null
+            serviceBound = false
+            Log.w(TAG, "PrinterForegroundService desvinculado inesperadamente — re-enlazando")
+            bindPrinterService()  // intenta reconectar al servicio
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Ciclo de vida
+    // ──────────────────────────────────────────────────────────────────────
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "getBondedDevices" -> {
-                    try {
-                        val adapter = BluetoothAdapter.getDefaultAdapter()
-                        if (adapter == null || !adapter.isEnabled) {
-                            Log.w(TAG, "getBondedDevices: Bluetooth desactivado")
-                            result.error("BLUETOOTH_DISABLED", "El Bluetooth está desactivado", null)
-                            return@setMethodCallHandler
-                        }
-                        val pairedDevices: Set<BluetoothDevice>? = adapter.bondedDevices
-                        val list = mutableListOf<Map<String, String>>()
-                        pairedDevices?.forEach { device ->
-                            list.add(
-                                mapOf(
-                                    "name" to (device.name ?: device.address),
-                                    "address" to device.address
-                                )
-                            )
-                        }
-                        Log.d(TAG, "getBondedDevices encontró ${list.size} dispositivos vinculados")
-                        result.success(list)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error en getBondedDevices", e)
-                        result.error("ERROR_BONDED", e.message, null)
-                    }
+        // Arrancar y enlazar el servicio en primer plano
+        startPrinterService()
+        bindPrinterService()
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getBondedDevices" -> handleGetBondedDevices(result)
+                    "connectPrinter"   -> handleConnect(call.argument("address"), result)
+                    "isConnected"      -> handleIsConnected(call.argument("address"), result)
+                    "disconnectPrinter"-> handleDisconnect(result)
+                    "printViaClassicSpp" -> handlePrint(
+                        call.argument("address"),
+                        call.argument("bytes"),
+                        result
+                    )
+                    else -> result.notImplemented()
                 }
-                "connectPrinter" -> {
-                    val rawAddress = call.argument<String>("address")
-                    if (rawAddress.isNullOrEmpty()) {
-                        Log.w(TAG, "connectPrinter: Dirección nula")
-                        result.error("INVALID_ARGS", "Dirección nula", null)
-                        return@setMethodCallHandler
-                    }
+            }
+    }
 
-                    val address = resolveBondedAddress(rawAddress)
-                    Log.d(TAG, "connectPrinter solicitado para $rawAddress, usando dirección $address")
+    override fun onDestroy() {
+        // Desvinculamos el Binder pero NO detenemos el servicio:
+        // el servicio sigue vivo en segundo plano para futuras impresiones.
+        if (serviceBound) {
+            unbindService(serviceConnection)
+            serviceBound = false
+        }
+        super.onDestroy()
+    }
 
-                    Thread {
-                        try {
-                            if (activeSocket != null && activeSocket!!.isConnected && activeAddress == address) {
-                                Log.d(TAG, "Ya está conectado a $address")
-                                runOnUiThread { result.success(true) }
-                                return@Thread
-                            }
+    // ──────────────────────────────────────────────────────────────────────
+    // Inicio y vinculación del Foreground Service
+    // ──────────────────────────────────────────────────────────────────────
 
-                            closeActiveSocket()
+    private fun startPrinterService() {
+        val intent = Intent(this, PrinterForegroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+        Log.d(TAG, "PrinterForegroundService iniciado")
+    }
 
-                            val adapter = BluetoothAdapter.getDefaultAdapter()
-                            if (adapter == null || !adapter.isEnabled) {
-                                Log.w(TAG, "Bluetooth desactivado")
-                                runOnUiThread { result.error("BLUETOOTH_DISABLED", "Bluetooth desactivado", null) }
-                                return@Thread
-                            }
+    private fun bindPrinterService() {
+        val intent = Intent(this, PrinterForegroundService::class.java)
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
 
-                            adapter.cancelDiscovery()
-                            val device: BluetoothDevice = adapter.getRemoteDevice(address)
+    // ──────────────────────────────────────────────────────────────────────
+    // Manejadores de MethodChannel
+    // ──────────────────────────────────────────────────────────────────────
 
-                            var socket: BluetoothSocket? = null
-                            try {
-                                Log.d(TAG, "Intentando createInsecureRfcommSocketToServiceRecord para $address...")
-                                socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-                                socket.connect()
-                                Log.i(TAG, "¡Conectado exitosamente vía Insecure SPP Record!")
-                            } catch (e1: Exception) {
-                                Log.w(TAG, "Fallo 1 (Insecure Record): ${e1.message}")
-                                try {
-                                    Log.d(TAG, "Intentando canal 1 inseguro por reflexión...")
-                                    val method = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                                    socket = method.invoke(device, 1) as BluetoothSocket
-                                    socket.connect()
-                                    Log.i(TAG, "¡Conectado exitosamente vía Canal 1 Inseguro!")
-                                } catch (e2: Exception) {
-                                    Log.w(TAG, "Fallo 2 (Canal 1 Inseguro): ${e2.message}")
-                                    try {
-                                        Log.d(TAG, "Intentando socket seguro...")
-                                        socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
-                                        socket.connect()
-                                        Log.i(TAG, "¡Conectado exitosamente vía Socket Seguro!")
-                                    } catch (e3: Exception) {
-                                        Log.e(TAG, "Fallo 3 (Socket Seguro): ${e3.message}")
-                                        throw e1
-                                    }
-                                }
-                            }
+    private fun handleGetBondedDevices(result: MethodChannel.Result) {
+        try {
+            val adapter = BluetoothAdapter.getDefaultAdapter()
+            if (adapter == null || !adapter.isEnabled) {
+                Log.w(TAG, "getBondedDevices: Bluetooth desactivado")
+                result.error("BLUETOOTH_DISABLED", "El Bluetooth está desactivado", null)
+                return
+            }
+            val list = adapter.bondedDevices?.map { device ->
+                mapOf("name" to (device.name ?: device.address), "address" to device.address)
+            } ?: emptyList()
+            Log.d(TAG, "getBondedDevices: ${list.size} dispositivos vinculados")
+            result.success(list)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error en getBondedDevices", e)
+            result.error("ERROR_BONDED", e.message, null)
+        }
+    }
 
-                            activeSocket = socket
-                            activeAddress = address
-                            runOnUiThread { result.success(true) }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error final conectando a $address", e)
-                            closeActiveSocket()
-                            runOnUiThread { result.error("CONNECT_ERROR", e.message ?: "Error al conectar", null) }
-                        }
-                    }.start()
+    private fun handleConnect(rawAddress: String?, result: MethodChannel.Result) {
+        if (rawAddress.isNullOrEmpty()) {
+            result.error("INVALID_ARGS", "Dirección nula", null)
+            return
+        }
+        val address = resolveBondedAddress(rawAddress)
+        Log.d(TAG, "connectPrinter → $address")
+
+        val svc = printerService
+        if (svc == null) {
+            // Servicio todavía no vinculado: conectar en hilo propio y re-intentar bind
+            Log.w(TAG, "Servicio no vinculado aún — intentando bind y conectando directamente")
+            bindPrinterService()
+            result.error("SERVICE_NOT_READY", "Servicio iniciándose, reintenta en un segundo", null)
+            return
+        }
+
+        Thread {
+            try {
+                val ok = svc.connect(address)
+                mainHandler.post {
+                    if (ok) result.success(true)
+                    else result.error("CONNECT_ERROR", "No se pudo conectar a $address", null)
                 }
-                "isConnected" -> {
-                    val rawAddress = call.argument<String>("address")
-                    val address = if (!rawAddress.isNullOrEmpty()) resolveBondedAddress(rawAddress) else null
-                    val isConn = activeSocket != null && activeSocket!!.isConnected && (address == null || activeAddress == address)
-                    Log.d(TAG, "isConnected para $address: $isConn")
-                    result.success(isConn)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error conectando a $address", e)
+                mainHandler.post {
+                    result.error("CONNECT_ERROR", e.message ?: "Error desconocido", null)
                 }
-                "disconnectPrinter" -> {
-                    Log.d(TAG, "disconnectPrinter invocado")
-                    closeActiveSocket()
+            }
+        }.start()
+    }
+
+    private fun handleIsConnected(rawAddress: String?, result: MethodChannel.Result) {
+        val address = if (!rawAddress.isNullOrEmpty()) resolveBondedAddress(rawAddress) else null
+        val connected = printerService?.isConnected(address) == true
+        Log.d(TAG, "isConnected($address): $connected")
+        result.success(connected)
+    }
+
+    private fun handleDisconnect(result: MethodChannel.Result) {
+        printerService?.disconnect()
+        Log.d(TAG, "disconnectPrinter invocado")
+        result.success(true)
+    }
+
+    private fun handlePrint(rawAddress: String?, bytes: ByteArray?, result: MethodChannel.Result) {
+        if (rawAddress.isNullOrEmpty() || bytes == null) {
+            result.error("INVALID_ARGS", "Dirección o bytes nulos", null)
+            return
+        }
+        val address = resolveBondedAddress(rawAddress)
+        Log.d(TAG, "printViaClassicSpp → $address (${bytes.size} bytes)")
+
+        val svc = printerService
+        if (svc == null) {
+            Log.w(TAG, "Servicio no vinculado — iniciando e intentando bind")
+            startPrinterService()
+            bindPrinterService()
+            result.error("SERVICE_NOT_READY", "Servicio iniciándose, reintenta", null)
+            return
+        }
+
+        // Encola el job — el worker del servicio lo procesará en background
+        svc.enqueuePrint(address, bytes) { success, error ->
+            mainHandler.post {
+                if (success) {
+                    Log.i(TAG, "Job impreso correctamente en $address")
                     result.success(true)
+                } else {
+                    Log.e(TAG, "Error en job de impresión: $error")
+                    result.error("PRINT_ERROR", error ?: "Error de impresión", null)
                 }
-                "printViaClassicSpp" -> {
-                    val rawAddress = call.argument<String>("address")
-                    val bytes = call.argument<ByteArray>("bytes")
-
-                    if (rawAddress.isNullOrEmpty() || bytes == null) {
-                        Log.w(TAG, "printViaClassicSpp: Parámetros inválidos")
-                        result.error("INVALID_ARGS", "Dirección o bytes nulos", null)
-                        return@setMethodCallHandler
-                    }
-
-                    val address = resolveBondedAddress(rawAddress)
-                    Log.d(TAG, "printViaClassicSpp enviando ${bytes.size} bytes a $address")
-                    Thread {
-                        try {
-                            if (activeSocket == null || !activeSocket!!.isConnected || activeAddress != address) {
-                                Log.d(TAG, "Re-conectando socket para impresión en $address")
-                                val adapter = BluetoothAdapter.getDefaultAdapter()
-                                if (adapter == null || !adapter.isEnabled) {
-                                    runOnUiThread { result.error("BLUETOOTH_DISABLED", "Bluetooth desactivado", null) }
-                                    return@Thread
-                                }
-
-                                adapter.cancelDiscovery()
-                                val device: BluetoothDevice = adapter.getRemoteDevice(address)
-
-                                var socket: BluetoothSocket? = null
-                                try {
-                                    socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-                                    socket.connect()
-                                } catch (e1: Exception) {
-                                    try {
-                                        val method = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                                        socket = method.invoke(device, 1) as BluetoothSocket
-                                        socket.connect()
-                                    } catch (e2: Exception) {
-                                        socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
-                                        socket.connect()
-                                    }
-                                }
-                                activeSocket = socket
-                                activeAddress = address
-                            }
-
-                            val outputStream: OutputStream = activeSocket!!.outputStream
-
-                            // ── PRE-FLUSH: Resetea el firmware antes de cada job ───────────────
-                            // La DIG-M220 cachea la "longitud de formulario" internamente.
-                            // Enviamos reset + modo continuo + detención de motor y esperamos
-                            // 300ms para que el firmware procese el cambio de modo antes del job.
-                            val preFlush = byteArrayOf(
-                                0x1B, 0x40,              // ESC @ — Reset total del firmware
-                                0x1F, 0x11, 0x0B,        // Modo papel: CONTINUO (no Label/Gap)
-                                0x1F.toByte(), 0xF0.toByte(), 0x03, 0x00  // Motor stop (limpiar estado previo)
-                            )
-                            Log.d(TAG, "Enviando pre-flush de modo continuo (${preFlush.size} bytes)...")
-                            outputStream.write(preFlush)
-                            outputStream.flush()
-                            Thread.sleep(300) // Espera crítica: el firmware necesita ~250-300ms para cambiar de modo
-
-                            // ── JOB PRINCIPAL ─────────────────────────────────────────────────
-                            outputStream.write(bytes)
-                            outputStream.flush()
-                            Log.i(TAG, "¡Bytes impresos y enviados a $address exitosamente (${bytes.size} bytes)!")
-
-                            runOnUiThread { result.success(true) }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error imprimiendo bytes en $address", e)
-                            closeActiveSocket()
-                            runOnUiThread { result.error("PRINT_ERROR", e.message ?: "Error enviando impresión", null) }
-                        }
-                    }.start()
-                }
-                else -> result.notImplemented()
             }
         }
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // Resolución de alias Bluetooth → MAC real
+    // ──────────────────────────────────────────────────────────────────────
+
     private fun resolveBondedAddress(requestedAddress: String): String {
         try {
             val adapter = BluetoothAdapter.getDefaultAdapter() ?: return requestedAddress
-            val bonded = adapter.bondedDevices ?: return requestedAddress
+            val bonded: Set<BluetoothDevice> = adapter.bondedDevices ?: return requestedAddress
 
-            // 1. Si la dirección solicitada coincide exactamente con una vinculada por MAC
+            // 1. Coincidencia exacta por MAC
             for (dev in bonded) {
-                if (dev.address.equals(requestedAddress, ignoreCase = true)) {
-                    return dev.address
-                }
+                if (dev.address.equals(requestedAddress, ignoreCase = true)) return dev.address
             }
 
-            // 2. Si no coincide por MAC, buscar coincidencia por nombre o limpia de _BLE
+            // 2. Coincidencia por nombre / alias _BLE
             val cleanReq = requestedAddress.replace("_BLE", "", ignoreCase = true).trim()
             for (dev in bonded) {
                 val devName = dev.name ?: ""
-                if (devName.isNotEmpty()) {
-                    if (devName.equals(cleanReq, ignoreCase = true) ||
-                        cleanReq.contains(devName, ignoreCase = true) ||
-                        devName.contains("M220", ignoreCase = true) ||
-                        devName.contains("Phomemo", ignoreCase = true) ||
-                        devName.contains("DIG-M220", ignoreCase = true)) {
-                        Log.i(TAG, "Mapeada la dirección '$requestedAddress' a la impresora vinculada '${dev.name}' (${dev.address})")
-                        return dev.address
-                    }
+                if (devName.isNotEmpty() &&
+                    (devName.equals(cleanReq, ignoreCase = true) ||
+                     cleanReq.contains(devName, ignoreCase = true) ||
+                     devName.contains("M220", ignoreCase = true) ||
+                     devName.contains("Phomemo", ignoreCase = true) ||
+                     devName.contains("DIG-M220", ignoreCase = true))
+                ) {
+                    Log.i(TAG, "Mapeada '$requestedAddress' → '${dev.name}' (${dev.address})")
+                    return dev.address
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Error resolviendo dirección vinculada: ${e.message}")
         }
         return requestedAddress
-    }
-
-    private fun closeActiveSocket() {
-        try {
-            if (activeSocket != null) {
-                Log.d(TAG, "Cerrando activeSocket para $activeAddress")
-                activeSocket?.close()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error cerrando socket", e)
-        }
-        activeSocket = null
-        activeAddress = null
-    }
-
-    override fun onDestroy() {
-        closeActiveSocket()
-        super.onDestroy()
     }
 }
