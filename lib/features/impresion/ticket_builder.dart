@@ -261,16 +261,13 @@ Future<List<int>> buildRasterEscPosBytes(
   final bytes = <int>[];
 
   // ── HEADER PROPIETARIO PHOMEMO M220 ──────────────────────────────────────
-  // Fuente: phomemo-tools (rastertopm110.py) + phomymo (printer.js)
+  // El reset (ESC @) y la pausa de 300ms ahora los hace el ForegroundService 
+  // en Android ANTES de enviar estos bytes. NO enviar ESC @ aquí porque 
+  // reiniciaría la impresora a modo Etiqueta perdiendo el efecto del pre-flush.
   bytes.addAll([
-    0x1B, 0x40,           // ESC @ — Reset / Inicializar impresora
     0x1B, 0x4E, 0x0D, 0x03,  // Velocidad de impresión = 3 (medio)
     0x1B, 0x4E, 0x04, 0x05,  // Densidad de impresión = 5 (medio)
-    // ¡CRÍTICO! Tipo de papel:
-    // 0x0A = Label With Gaps  ← ESTE ERA EL BUG: buscaba el gap 50cm sin parar
-    // 0x0B = Continuous       ← CORRECTO para tickets / rollo continuo
-    // 0x26 = Label With Marks (black mark)
-    0x1F, 0x11, 0x0B,     // Modo papel: CONTINUO — el motor para al acabar
+    0x1F, 0x11, 0x0B,        // Modo papel: CONTINUO (reafirmar por si acaso)
   ]);
 
   // ── DATOS RASTER (GS v 0) ────────────────────────────────────────────────
