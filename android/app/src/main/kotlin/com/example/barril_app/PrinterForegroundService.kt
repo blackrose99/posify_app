@@ -166,19 +166,7 @@ class PrinterForegroundService : Service() {
 
             val out: OutputStream = activeSocket!!.outputStream
 
-            // ── PRE-FLUSH: resetea el modo de papel del firmware ──────────
-            // Crítico: limpia el form_length cacheado y pone modo Continuo.
-            // Sin esto, la primera impresión puede avanzar 50cm de papel.
-            val preFlush = byteArrayOf(
-                0x1B, 0x40,                                     // ESC @ — Reset firmware
-                0x1F, 0x11, 0x0B,                               // Modo papel: CONTINUO
-                0x1F.toByte(), 0xF0.toByte(), 0x03, 0x00        // Motor stop / limpiar estado
-            )
-            out.write(preFlush)
-            out.flush()
-            Thread.sleep(300)   // Firmware M220 necesita ~250-300ms para procesar el cambio de modo
-
-            // ── JOB PRINCIPAL ─────────────────────────────────────────────
+            // ── JOB PRINCIPAL (Generado dinámicamente en Dart con ESC/POS puro) ──
             out.write(job.bytes)
             out.flush()
 

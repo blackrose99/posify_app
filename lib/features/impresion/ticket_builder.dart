@@ -1,5 +1,6 @@
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
 import 'package:image/image.dart' as img;
+import 'package:flutter/foundation.dart';
 
 import '../../core/utils/money_formatter.dart';
 import 'ticket_data.dart';
@@ -260,26 +261,48 @@ Future<List<int>> buildRasterEscPosBytes(
   final generator = Generator(_paperSizeDe(ancho), profile);
   final bytes = <int>[];
 
-  // ── HEADER PROPIETARIO PHOMEMO M220 ──────────────────────────────────────
-  // El reset (ESC @) y la pausa de 300ms ahora los hace el ForegroundService 
-  // en Android ANTES de enviar estos bytes. NO enviar ESC @ aquí porque 
-  // reiniciaría la impresora a modo Etiqueta perdiendo el efecto del pre-flush.
+  // 1. INIT Y CONFIGURACIÓN
+  // PRUEBA A/B 1: Se elimina ESC @ (0x1B 0x40) porque restablece el firmware
+  // de la M220 a su modo fábrica = etiqueta con form_length fija de ~50cm,
+  // lo que provoca que el motor avance ~45cm después de imprimir el bitmap.
+  // En su lugar se envía 1F 11 0B que configura explícitamente modo papel continuo.
   bytes.addAll([
-    0x1B, 0x4E, 0x0D, 0x03,  // Velocidad de impresión = 3 (medio)
-    0x1B, 0x4E, 0x04, 0x05,  // Densidad de impresión = 5 (medio)
-    0x1F, 0x11, 0x0B,        // Modo papel: CONTINUO (reafirmar por si acaso)
+    0x1F, 0x11, 0x0B, // Phomemo: modo papel continuo (no reinicia form_length)
+    0x1B, 0x33, 0x00, // ESC 3 0 - Set line spacing to 0
   ]);
 
-  // ── DATOS RASTER (GS v 0) ────────────────────────────────────────────────
-  bytes.addAll(generator.imageRaster(image));
+  // 2. DATOS RASTER (GS v 0)
+  // El generator.imageRaster internamente envía 1D 76 30 00, luego el ancho en bytes,
+  // luego el alto en líneas, y finalmente los bytes de la imagen.
+  final rasterBytes = generator.imageRaster(image);
+  bytes.addAll(rasterBytes);
 
-  // ── FOOTER PROPIETARIO PHOMEMO M220 ─────────────────────────────────────
-  // Fuente: phomemo-tools Issue #13 + phomymo/printer.js
+  // 3. FINALIZACIÓN Y CORTE (Avance exacto y paro)
+  // Usamos ESC J (0x1B 0x4A <dots>) que avanza el papel N puntos, o ESC d <lines>.
+  // Avanzamos ~16 mm (16 * 8 = 128 puntos) para liberar el papel del cabezal de forma segura.
   bytes.addAll([
-    0x1B, 0x64, 0x02,       // ESC d 2 — Avanzar 2 líneas (separación de corte)
-    0x1F, 0xF0, 0x05, 0x00, // End-of-print signal (propietario Phomemo)
-    0x1F, 0xF0, 0x03, 0x00, // Motor stop / reset (propietario Phomemo)
+    0x1B, 0x4A, 128, // ESC J 128 - Avanzar 128 puntos
   ]);
+
+  // ---- LOGGING DIAGNÓSTICO PROFUNDO ----
+  final totalBytes = bytes.length;
+  final widthBytes = image.width ~/ 8;
+  final heightLines = image.height;
+  final heightMm = heightLines / 8.0;
+  
+  debugPrint('\n================ REPORTE DE IMPRESIÓN M220 ================');
+  debugPrint('ANCHO REAL BITMAP: ${image.width} px ($widthBytes bytes por fila)');
+  debugPrint('ALTO REAL BITMAP:  $heightLines px (${heightMm.toStringAsFixed(2)} mm)');
+  debugPrint('CANTIDAD DE BYTES RASTER: ${rasterBytes.length}');
+  debugPrint('TOTAL BYTES ENVIADOS: $totalBytes');
+  
+  // Imprimir Hex estructurado
+  String toHex(List<int> b) => b.map((e) => e.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
+  debugPrint('\n[PACKET HEX LOG]');
+  debugPrint('HEADER (Init, Spacing): ${toHex([0x1B, 0x40, 0x1B, 0x33, 0x00])}');
+  debugPrint('RASTER CMD HEADER: ${toHex(rasterBytes.sublist(0, 8))} ... [data omitida] ...');
+  debugPrint('FOOTER (Feed dots): ${toHex([0x1B, 0x4A, 128])}');
+  debugPrint('===========================================================\n');
 
   return bytes;
 }
