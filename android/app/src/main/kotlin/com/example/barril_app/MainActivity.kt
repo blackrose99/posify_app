@@ -212,16 +212,13 @@ class MainActivity : FlutterActivity() {
                 if (dev.address.equals(requestedAddress, ignoreCase = true)) return dev.address
             }
 
-            // 2. Coincidencia por nombre / alias _BLE
+            // 2. Coincidencia por nombre / alias sin prefijo/sufijo _BLE
             val cleanReq = requestedAddress.replace("_BLE", "", ignoreCase = true).trim()
             for (dev in bonded) {
-                val devName = dev.name ?: ""
+                val devName = (dev.name ?: "").trim()
                 if (devName.isNotEmpty() &&
                     (devName.equals(cleanReq, ignoreCase = true) ||
-                     cleanReq.contains(devName, ignoreCase = true) ||
-                     devName.contains("M220", ignoreCase = true) ||
-                     devName.contains("Phomemo", ignoreCase = true) ||
-                     devName.contains("DIG-M220", ignoreCase = true))
+                     cleanReq.equals(devName, ignoreCase = true))
                 ) {
                     Log.i(TAG, "Mapeada '$requestedAddress' → '${dev.name}' (${dev.address})")
                     return dev.address

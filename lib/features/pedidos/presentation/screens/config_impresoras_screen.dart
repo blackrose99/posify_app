@@ -1,8 +1,6 @@
 import 'dart:convert';
 import 'package:drift/drift.dart' as drift;
-import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
 import 'package:flutter/material.dart';
-import 'package:image/image.dart' as img;
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../database/app_database.dart';
@@ -10,6 +8,7 @@ import '../../../../injection_container.dart';
 import '../../../impresion/bluetooth_printer_service.dart';
 import '../../../impresion/ticket_builder.dart';
 import '../../../impresion/ticket_data.dart';
+import '../../domain/entities/item_pedido.dart';
 
 class ConfigImpresorasScreen extends StatefulWidget {
   const ConfigImpresorasScreen({super.key});
@@ -24,6 +23,7 @@ class _ConfigImpresorasScreenState extends State<ConfigImpresorasScreen> {
 
   bool _loading = true;
   bool _escaneando = false;
+  bool _calibrando = false;
   bool _imprimiendoPrueba = false;
   String _printerDeviceId = '';
   String _printerDeviceName = '';
@@ -63,10 +63,6 @@ class _ConfigImpresorasScreenState extends State<ConfigImpresorasScreen> {
     final anchoRaw = await _leerConfig('printer_paper_width', fallback: '32');
     final ancho = AnchoPapelX.desdeCaracteres(int.tryParse(anchoRaw) ?? 32);
 
-    if (deviceId.isNotEmpty) {
-      await _printerService.connect(deviceId);
-    }
-
     if (!mounted) return;
     setState(() {
       _printerDeviceId = deviceId;
@@ -74,6 +70,11 @@ class _ConfigImpresorasScreenState extends State<ConfigImpresorasScreen> {
       _anchoPapel = ancho;
       _loading = false;
     });
+
+    // Conectar en segundo plano sin bloquear la interfaz con spinner
+    if (deviceId.isNotEmpty) {
+      _printerService.connect(deviceId);
+    }
   }
 
   Future<void> _cargarYBuscar() async {
@@ -82,7 +83,7 @@ class _ConfigImpresorasScreenState extends State<ConfigImpresorasScreen> {
 
     if (_printerDeviceId.isEmpty && _encontrados.isNotEmpty) {
       final vinculada = _encontrados.firstWhere(
-        (p) => p.isBonded || p.name.toUpperCase().contains('M220') || p.name.toUpperCase().contains('DIG'),
+        (p) => p.isBonded || p.name.toUpperCase().contains('PRINT') || p.name.toUpperCase().contains('POS'),
         orElse: () => _encontrados.first,
       );
       await _seleccionarImpresora(vinculada);
@@ -175,10 +176,116 @@ class _ConfigImpresorasScreenState extends State<ConfigImpresorasScreen> {
     setState(() => _anchoPapel = ancho);
   }
 
+  Future<void> _calibrarYSincronizarImpresora() async {
+    setState(() => _calibrando = true);
+    try {
+      final okPermisos = await _printerService.requestPermissions();
+      if (!okPermisos && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Se requieren permisos de Bluetooth y Ubicación para calibrar.'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+        return;
+      }
+
+      String targetId = _printerDeviceId.trim();
+      String targetName = _printerDeviceName.trim();
+
+      // Si no hay impresora seleccionada, buscar automáticamente dispositivos cercanos
+      if (targetId.isEmpty) {
+        final lista = await _printerService.scanPrinters();
+        if (mounted) setState(() => _encontrados = lista);
+
+        if (lista.isEmpty) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'No se detectó ninguna impresora Bluetooth. Enciéndela y verifica que tenga batería.',
+              ),
+              backgroundColor: AppColors.error,
+            ),
+          );
+          return;
+        }
+
+        // Elegir la candidata más probable (vinculada o con nombre POS / Print)
+        final candidata = lista.firstWhere(
+          (p) =>
+              p.isBonded ||
+              p.name.toUpperCase().contains('PRINT') ||
+              p.name.toUpperCase().contains('POS') ||
+              p.name.toUpperCase().contains('M220') ||
+              p.name.toUpperCase().contains('BT'),
+          orElse: () => lista.first,
+        );
+
+        targetId = candidata.id;
+        targetName = candidata.name.isNotEmpty ? candidata.name : candidata.id;
+      }
+
+      // Conectar y descubrir canales de comunicación (SPP / GATT UART)
+      final device = await _printerService.connect(targetId);
+      if (device == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'No se pudo comunicar con "$targetName". Verifica que la luz azul esté encendida.',
+            ),
+            backgroundColor: AppColors.error,
+          ),
+        );
+        return;
+      }
+
+      // Guardar en la base de datos como impresora predeterminada
+      await _upsertConfig('printer_device_id', targetId);
+      await _upsertConfig('printer_device_name', targetName);
+      if (mounted) {
+        setState(() {
+          _printerDeviceId = targetId;
+          _printerDeviceName = targetName;
+        });
+      }
+
+      // Generar ticket de calibración con holgura verificada (1 cm inicio, >1.5 cm corte)
+      final bytes = buildCalibrationTicketBytes(
+        ancho: _anchoPapel,
+        deviceName: targetName,
+      );
+      final exito = await _printerService.printBytes(device, bytes);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            exito
+                ? '¡Impresora "$targetName" calibrada y sincronizada exitosamente!'
+                : 'Conectada a "$targetName", pero no imprimió. Verifica el rollo de papel.',
+          ),
+          backgroundColor: exito ? AppColors.success : AppColors.error,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error al calibrar: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _calibrando = false);
+    }
+  }
+
   Future<void> _imprimirTicketPrueba() async {
     if (_printerDeviceId.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Primero selecciona una impresora de la lista.')),
+        const SnackBar(content: Text('Primero pulsa "Calibrar y Sincronizar" o selecciona una impresora.')),
       );
       return;
     }
@@ -188,13 +295,34 @@ class _ConfigImpresorasScreenState extends State<ConfigImpresorasScreen> {
       final nombreNegocio = await _leerConfig('nombre_negocio', fallback: 'POSify');
       final ticketPrueba = TicketData(
         nombreNegocio: nombreNegocio,
-        pedidoId: 0,
+        pedidoId: 101,
         numeroTurno: 1,
         tipo: 'mesa',
-        referencia: 'Mesa de prueba',
-        cliente: 'Cliente prueba',
+        referencia: 'Mesa 1',
+        cliente: 'Cliente Prueba',
         mesero: 'POSify',
-        items: const [],
+        items: const [
+          ItemPedido(
+            id: 1,
+            pedidoId: 101,
+            productoId: 1,
+            nombreProducto: 'Carne al Barril 250g',
+            precio: 25000,
+            cantidad: 1,
+            adicionales: ['Papas a la francesa'],
+            nota: 'Término medio',
+          ),
+          ItemPedido(
+            id: 2,
+            pedidoId: 101,
+            productoId: 2,
+            nombreProducto: 'Gaseosa Postobón',
+            precio: 5000,
+            cantidad: 1,
+            adicionales: [],
+            nota: '',
+          ),
+        ],
         valorDomicilio: 0,
         cobrarDomicilio: false,
         estadoPedido: 'cerrado',
@@ -210,97 +338,11 @@ class _ConfigImpresorasScreenState extends State<ConfigImpresorasScreen> {
         SnackBar(
           content: Text(
             exito
-                ? '¡Éxito! Ticket de prueba impreso en $_printerDeviceName.'
-                : 'No se pudo imprimir en $_printerDeviceName. Verifica que esté encendida y conectada.',
+                ? '¡Éxito! Factura de prueba impresa en $_printerDeviceName.'
+                : 'No se pudo imprimir en $_printerDeviceName. Verifica conexión y papel.',
           ),
           backgroundColor: exito ? AppColors.success : AppColors.error,
         ),
-      );
-    } finally {
-      if (mounted) setState(() => _imprimiendoPrueba = false);
-    }
-  }
-
-  Future<void> _imprimirTextoPlanoPrueba() async {
-    if (_printerDeviceId.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Primero selecciona una impresora de la lista.')),
-      );
-      return;
-    }
-
-    setState(() => _imprimiendoPrueba = true);
-    try {
-      final nombreNegocio = await _leerConfig('nombre_negocio', fallback: 'POSify');
-      final textoPrueba =
-          '\x1B\x40================================\n  $nombreNegocio\n  PRUEBA DE IMPRESION OK\n================================\n\n\n\n';
-      final bytes = latin1.encode(textoPrueba);
-
-      final device = await _printerService.connect(_printerDeviceId);
-      final exito = device != null && await _printerService.printBytes(device, bytes);
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            exito
-                ? 'Texto plano enviado a $_printerDeviceName.'
-                : 'No se pudo imprimir en $_printerDeviceName.',
-          ),
-          backgroundColor: exito ? AppColors.success : AppColors.error,
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _imprimiendoPrueba = false);
-    }
-  }
-
-  Future<void> _imprimirRasterPrueba() async {
-    if (_printerDeviceId.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Primero selecciona una impresora de la lista.')),
-      );
-      return;
-    }
-
-    setState(() => _imprimiendoPrueba = true);
-    try {
-      final width = _anchoPapel == AnchoPapel.mm58 ? 384 : 576;
-      final image = img.Image(width: width, height: 320);
-      img.fill(image, color: img.ColorRgb8(255, 255, 255));
-
-      final nombreNegocio = await _leerConfig('nombre_negocio', fallback: 'POSify');
-
-      img.drawString(image, '=== $nombreNegocio ===', font: img.arial24, x: 10, y: 15, color: img.ColorRgb8(0, 0, 0));
-      img.drawString(image, 'IMPRESION PHOMEMO M220', font: img.arial24, x: 10, y: 55, color: img.ColorRgb8(0, 0, 0));
-      img.drawString(image, 'Ticket de prueba OK!', font: img.arial24, x: 10, y: 95, color: img.ColorRgb8(0, 0, 0));
-      img.drawLine(image, x1: 10, y1: 135, x2: width - 10, y2: 135, color: img.ColorRgb8(0, 0, 0), thickness: 2);
-
-      final profile = await CapabilityProfile.load();
-      final generator = Generator(_anchoPapel == AnchoPapel.mm58 ? PaperSize.mm58 : PaperSize.mm80, profile);
-      final bytes = <int>[];
-      bytes.addAll([0x1B, 0x40]);
-      bytes.addAll(generator.imageRaster(image));
-      bytes.addAll([0x1B, 0x4A, 160]);
-
-      final device = await _printerService.connect(_printerDeviceId);
-      final exito = device != null && await _printerService.printBytes(device, bytes);
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            exito
-                ? '¡Éxito! Imagen raster enviada a $_printerDeviceName.'
-                : 'No se pudo imprimir en $_printerDeviceName.',
-          ),
-          backgroundColor: exito ? AppColors.success : AppColors.error,
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al generar raster: $e'), backgroundColor: AppColors.error),
       );
     } finally {
       if (mounted) setState(() => _imprimiendoPrueba = false);
@@ -368,25 +410,30 @@ class _ConfigImpresorasScreenState extends State<ConfigImpresorasScreen> {
                         runSpacing: 8,
                         children: [
                           FilledButton.icon(
-                            onPressed: _imprimiendoPrueba ? null : _imprimirTicketPrueba,
-                            icon: _imprimiendoPrueba
+                            onPressed: (_calibrando || _imprimiendoPrueba) ? null : _calibrarYSincronizarImpresora,
+                            icon: _calibrando
                                 ? const SizedBox(
                                     width: 16,
                                     height: 16,
                                     child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                                   )
+                                : const Icon(Icons.sync_alt),
+                            label: Text(_calibrando ? 'Calibrando...' : 'Calibrar y Sincronizar Impresora'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: AppColors.primary,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: (_calibrando || _imprimiendoPrueba) ? null : _imprimirTicketPrueba,
+                            icon: _imprimiendoPrueba
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
                                 : const Icon(Icons.receipt_long),
-                            label: const Text('Imprimir ticket de prueba'),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: _imprimiendoPrueba ? null : _imprimirTextoPlanoPrueba,
-                            icon: const Icon(Icons.text_snippet_outlined),
-                            label: const Text('Prueba texto plano'),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: _imprimiendoPrueba ? null : _imprimirRasterPrueba,
-                            icon: const Icon(Icons.image_outlined),
-                            label: const Text('Prueba Phomemo (Raster)'),
+                            label: const Text('Imprimir Factura de Prueba'),
                           ),
                         ],
                       ),

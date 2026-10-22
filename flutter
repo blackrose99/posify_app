@@ -1,5 +1,0 @@
-      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
-     1422    1222    1422      18872  cons1     197609 19:13:14 /c/dev/flutter/bin/flutter.bat
-     1222       1    1222      13408  cons1     197609 18:26:05 /usr/bin/bash
-     1568    1221    1568      12024  cons0     197609 19:13:37 /usr/bin/PS
-     1221       1    1221      15508  cons0     197609 18:26:05 /usr/bin/bash

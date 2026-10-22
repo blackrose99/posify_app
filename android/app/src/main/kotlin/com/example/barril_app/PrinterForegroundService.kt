@@ -66,7 +66,6 @@ class PrinterForegroundService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Impresora lista para imprimir"))
-        acquireWakeLock()
         startWorker()
         Log.i(TAG, "PrinterForegroundService creado y en primer plano")
     }
@@ -156,6 +155,7 @@ class PrinterForegroundService : Service() {
 
     private fun processJob(job: PrintJob) {
         Log.d(TAG, "Procesando job para ${job.address} (${job.bytes.size} bytes)")
+        acquireWakeLock(15000L) // Despierta el CPU sólo durante el envío del ticket (máx 15s)
         try {
             // Reconectar si el socket se cerró mientras estaba en background
             if (activeSocket?.isConnected != true || activeAddress != job.address) {
@@ -179,6 +179,8 @@ class PrinterForegroundService : Service() {
             closeSocket()
             updateNotification("Error al imprimir — reintentando conexión")
             job.callback(false, e.message ?: "Error de impresión")
+        } finally {
+            releaseWakeLock()
         }
     }
 
@@ -208,10 +210,15 @@ class PrinterForegroundService : Service() {
                 Log.i(TAG, "Conectado vía Canal 1 Inseguro")
             } catch (e2: Exception) {
                 Log.w(TAG, "Fallo Canal Inseguro: ${e2.message}")
-                Log.d(TAG, "Intentando socket seguro como último recurso...")
-                socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
-                socket.connect()
-                Log.i(TAG, "Conectado vía Socket Seguro")
+                try {
+                    Log.d(TAG, "Intentando socket seguro como último recurso...")
+                    socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                    socket.connect()
+                    Log.i(TAG, "Conectado vía Socket Seguro")
+                } catch (e3: Exception) {
+                    Log.w(TAG, "Fallo Socket Seguro: ${e3.message}")
+                    throw e3
+                }
             }
         }
         activeSocket = socket
@@ -227,18 +234,23 @@ class PrinterForegroundService : Service() {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // WakeLock — evita que el CPU duerma durante impresión en background
+    // WakeLock — evita que el CPU duerma exclusivamente durante impresión
     // ──────────────────────────────────────────────────────────────────────
 
-    private fun acquireWakeLock() {
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "barril_app::PrinterWakeLock"
-        ).apply {
-            acquire(60 * 60 * 1000L)   // máximo 1 hora; se libera en onDestroy
-        }
-        Log.d(TAG, "WakeLock adquirido")
+    private fun acquireWakeLock(timeoutMs: Long = 15000L) {
+        try {
+            if (wakeLock == null) {
+                val pm = getSystemService(POWER_SERVICE) as PowerManager
+                wakeLock = pm.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "barril_app::PrinterWakeLock"
+                )
+            }
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire(timeoutMs)
+                Log.d(TAG, "WakeLock adquirido temporalmente ($timeoutMs ms)")
+            }
+        } catch (_: Exception) {}
     }
 
     private fun releaseWakeLock() {

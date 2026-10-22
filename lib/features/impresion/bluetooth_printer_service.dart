@@ -179,17 +179,30 @@ class BluetoothPrinterService {
   Future<BluetoothDevice?> connect(String remoteId) async {
     if (remoteId.trim().isEmpty) return null;
     try {
-      if (Platform.isAndroid) {
-        final bool? ok = await _channel.invokeMethod<bool>('connectPrinter', {'address': remoteId});
-        debugPrint('Resultado connectPrinter para $remoteId: $ok');
-      }
       final device = BluetoothDevice.fromId(remoteId);
+
+      // Conexión BLE rápida con timeout controlado
       try {
         if (!device.isConnected) {
           await device.connect(timeout: const Duration(seconds: 4), autoConnect: false);
-          await device.requestMtu(512);
+          try {
+            await device.requestMtu(512);
+          } catch (_) {}
         }
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('Aviso BLE connect para $remoteId: $e');
+      }
+
+      // Conexión Classic SPP nativa en Android con timeout de seguridad (no bloquea la UI)
+      if (Platform.isAndroid && !remoteId.toUpperCase().contains('BLE')) {
+        try {
+          await _channel.invokeMethod<bool>('connectPrinter', {'address': remoteId}).timeout(
+            const Duration(seconds: 4),
+            onTimeout: () => false,
+          );
+        } catch (_) {}
+      }
+
       return device;
     } catch (e) {
       debugPrint('Error obteniendo dispositivo $remoteId: $e');
@@ -200,6 +213,8 @@ class BluetoothPrinterService {
   /// Consulta si la impresora seleccionada tiene un socket activo (luz azul fija).
   Future<bool> isConnected(String remoteId) async {
     if (remoteId.trim().isEmpty) return false;
+    final device = BluetoothDevice.fromId(remoteId);
+    if (device.isConnected) return true;
     if (Platform.isAndroid) {
       try {
         final bool? res = await _channel.invokeMethod<bool>('isConnected', {'address': remoteId});
@@ -225,14 +240,19 @@ class BluetoothPrinterService {
   Future<bool> printBytes(BluetoothDevice device, List<int> bytes) async {
     final address = device.remoteId.str;
 
-    // 1. Intentar impresión por Bluetooth Classic (SPP) si estamos en Android
+    // 1. Si la dirección es explícitamente BLE o no es bonded nativo, ir directo a BLE
+    if (address.toUpperCase().contains('BLE')) {
+      return _printBytesBle(device, bytes);
+    }
+
+    // 2. Intentar impresión por Bluetooth Classic (SPP) si estamos en Android
     if (Platform.isAndroid && address.isNotEmpty) {
       try {
         debugPrint('Intentando imprimir vía Bluetooth Classic (SPP) en $address...');
         final bool? exitoSpp = await _channel.invokeMethod<bool>('printViaClassicSpp', {
           'address': address,
           'bytes': Uint8List.fromList(bytes),
-        });
+        }).timeout(const Duration(seconds: 4), onTimeout: () => false);
         if (exitoSpp == true) {
           debugPrint('¡Impresión por Bluetooth Classic (SPP) exitosa!');
           return true;
@@ -242,14 +262,14 @@ class BluetoothPrinterService {
       }
     }
 
-    // 2. Fallback a BLE GATT
+    // 3. Fallback inmediato a BLE GATT
     return _printBytesBle(device, bytes);
   }
 
   Future<bool> _printBytesBle(BluetoothDevice device, List<int> bytes) async {
     try {
       if (!device.isConnected) {
-        await device.connect(timeout: const Duration(seconds: 10), autoConnect: false);
+        await device.connect(timeout: const Duration(seconds: 5), autoConnect: false);
         try {
           await device.requestMtu(512);
         } catch (_) {}
@@ -257,14 +277,33 @@ class BluetoothPrinterService {
 
       final servicios = await device.discoverServices();
       BluetoothCharacteristic? writable;
+
+      // Prioridad 1: Características estándar conocidas de impresoras térmicas BLE
+      // 0000fff1 (JieLi/ZhuHai POS-58), 49535343-8841 (ISSC Transparent UART), 0000ff02, 0000ff13
       for (final s in servicios) {
         for (final c in s.characteristics) {
-          if (c.properties.write || c.properties.writeWithoutResponse) {
-            writable = c;
-            break;
+          final uuid = c.uuid.str.toLowerCase();
+          if (uuid.contains('fff1') || uuid.contains('49535343-8841') || uuid.contains('ff02') || uuid.contains('ff13')) {
+            if (c.properties.write || c.properties.writeWithoutResponse) {
+              writable = c;
+              break;
+            }
           }
         }
         if (writable != null) break;
+      }
+
+      // Prioridad 2: Cualquier característica con capacidad de escritura
+      if (writable == null) {
+        for (final s in servicios) {
+          for (final c in s.characteristics) {
+            if (c.properties.write || c.properties.writeWithoutResponse) {
+              writable = c;
+              break;
+            }
+          }
+          if (writable != null) break;
+        }
       }
 
       if (writable == null) {
