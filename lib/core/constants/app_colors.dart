@@ -13,8 +13,17 @@ class AppColors {
 
   // Estados semánticos: distintos del verde de marca para no confundirse con él.
   static const Color success = Color(0xFF00897B);
-  static const Color warning = Color(0xFFBA7517);
+  static const Color warning = Color(0xFFD97706);
   static const Color error = Color(0xFFE24B4A);
+
+  // Colores representativos para acciones y botones clave
+  static const Color nuevoPedido = Color(0xFFEA580C); // Naranja vibrante llamativo
+  static const Color nuevoPedidoLight = Color(0xFFFFF7ED);
+  static const Color agregarProductos = Color(0xFF16A34A); // Verde acción principal
+  static const Color comandaCocina = Color(0xFFD97706); // Ámbar cocina
+  static const Color verTicket = Color(0xFF0284C7); // Azul ticket/información
+  static const Color editarDatos = Color(0xFF6366F1); // Índigo edición
+  static const Color cobrarCerrar = Color(0xFF0D9488); // Teal cobro/cierre
 
   // Verde claro = mesa libre/disponible, ámbar claro = mesa ocupada (antes
   // ambos eran azules casi idénticos y no se distinguían de un vistazo).

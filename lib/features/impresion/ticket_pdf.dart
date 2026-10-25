@@ -243,3 +243,181 @@ Future<Uint8List> buildTicketPdf(TicketData data) async {
 
   return doc.save();
 }
+
+/// Genera el documento PDF de la COMANDA DE COCINA con código de turno grande,
+/// casillas de checklist [ ] para el cocinero, notas de preparación y sin valores monetarios.
+Future<Uint8List> buildCocinaTicketPdf(TicketData data) async {
+  final doc = pw.Document();
+
+  doc.addPage(
+    pw.Page(
+      pageFormat: PdfPageFormat.a5,
+      margin: const pw.EdgeInsets.all(28),
+      build: (context) {
+        return pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text(
+                      'ORDEN DE COCINA',
+                      style: pw.TextStyle(
+                        fontSize: 22,
+                        fontWeight: pw.FontWeight.bold,
+                        color: _verde,
+                      ),
+                    ),
+                    pw.SizedBox(height: 4),
+                    pw.Text(
+                      data.nombreNegocio,
+                      style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey700),
+                    ),
+                  ],
+                ),
+                pw.Container(
+                  padding: const pw.EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: pw.BoxDecoration(
+                    color: _verde,
+                    borderRadius: pw.BorderRadius.circular(8),
+                  ),
+                  child: pw.Text(
+                    data.codigoTurno,
+                    style: pw.TextStyle(
+                      color: PdfColors.white,
+                      fontSize: 22,
+                      fontWeight: pw.FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            pw.SizedBox(height: 16),
+            pw.Container(
+              width: double.infinity,
+              padding: const pw.EdgeInsets.all(12),
+              decoration: pw.BoxDecoration(
+                color: _verdeClaro,
+                borderRadius: pw.BorderRadius.circular(8),
+              ),
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text(
+                    '${data.esDomicilio ? 'Domicilio' : 'Mesa'}: ${data.referenciaONombreTipo}',
+                    style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
+                  ),
+                  if (data.cliente.trim().isNotEmpty)
+                    pw.Text('Cliente: ${data.cliente.trim()}', style: const pw.TextStyle(fontSize: 11)),
+                  if (data.mesero.trim().isNotEmpty)
+                    pw.Text('Mesero: ${data.mesero.trim()}', style: const pw.TextStyle(fontSize: 11)),
+                  pw.Text('Hora: ${formatFechaTicket(data.fecha)}', style: const pw.TextStyle(fontSize: 11)),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 16),
+            pw.Text(
+              'PLATOS A PREPARAR (CHECKLIST)',
+              style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: _verde),
+            ),
+            pw.Divider(color: _verde, thickness: 1),
+            if (data.items.isEmpty)
+              pw.Padding(
+                padding: const pw.EdgeInsets.symmetric(vertical: 12),
+                child: pw.Text(
+                  'Sin productos agregados.',
+                  style: pw.TextStyle(color: PdfColors.grey600, fontStyle: pw.FontStyle.italic),
+                ),
+              )
+            else
+              ...data.items.map((item) {
+                final adicionales = item.adicionales;
+                final nota = item.nota.trim();
+                return pw.Padding(
+                  padding: const pw.EdgeInsets.symmetric(vertical: 6),
+                  child: pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Row(
+                        crossAxisAlignment: pw.CrossAxisAlignment.center,
+                        children: [
+                          pw.Container(
+                            width: 14,
+                            height: 14,
+                            decoration: pw.BoxDecoration(
+                              border: pw.Border.all(color: PdfColors.grey800, width: 1.5),
+                              borderRadius: pw.BorderRadius.circular(3),
+                            ),
+                          ),
+                          pw.SizedBox(width: 8),
+                          pw.Text(
+                            '${item.cantidad}x',
+                            style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
+                          ),
+                          pw.SizedBox(width: 8),
+                          pw.Expanded(
+                            child: pw.Text(
+                              item.nombreProducto,
+                              style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (adicionales.isNotEmpty)
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.only(left: 30, top: 2),
+                          child: pw.Text(
+                            '+ ${adicionales.join(', ')}',
+                            style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey800),
+                          ),
+                        ),
+                      if (nota.isNotEmpty)
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.only(left: 30, top: 2),
+                          child: pw.Text(
+                            '* NOTA: $nota',
+                            style: pw.TextStyle(
+                              fontSize: 10,
+                              color: PdfColors.deepOrange,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              }),
+            pw.Divider(color: PdfColors.grey400),
+            pw.SizedBox(height: 8),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  'Total de platos a despachar:',
+                  style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
+                ),
+                pw.Text(
+                  '${data.totalCantidadItems}',
+                  style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: _verde),
+                ),
+              ],
+            ),
+            pw.Spacer(),
+            pw.Center(
+              child: pw.Text(
+                '*** CONTROL DE DESPACHO Y COCINA ***',
+                style: pw.TextStyle(fontSize: 10, color: PdfColors.grey600, fontWeight: pw.FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+
+  return doc.save();
+}

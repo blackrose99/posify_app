@@ -7,6 +7,8 @@ import '../../../../core/constants/app_colors.dart';
 import '../../../../core/utils/money_formatter.dart';
 import '../../../../database/app_database.dart' as dbi;
 import '../../../../injection_container.dart';
+import '../../../impresion/bluetooth_printer_service.dart';
+import '../../../impresion/ticket_builder.dart';
 import '../../../impresion/ticket_data.dart';
 import '../../../productos/domain/entities/producto.dart';
 import '../../../productos/presentation/providers/productos_provider.dart';
@@ -51,6 +53,8 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
   bool _cobrarDomicilio = false;
   double _valorDomicilioPedido = 5000;
   bool _jornadaEstaAbierta = true;
+  bool _impresoCliente = false;
+  bool _impresoCocina = false;
 
   int _nowEpochMs() => DateTime.now().millisecondsSinceEpoch;
 
@@ -133,7 +137,22 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
     _inicializar();
   }
 
+  Future<void> _asegurarColumnasImpresion() async {
+    try {
+      await _db.customStatement(
+        'ALTER TABLE pedidos ADD COLUMN impreso_cliente INTEGER NOT NULL DEFAULT 0',
+      );
+    } catch (_) {}
+    try {
+      await _db.customStatement(
+        'ALTER TABLE pedidos ADD COLUMN impreso_cocina INTEGER NOT NULL DEFAULT 0',
+      );
+    } catch (_) {}
+  }
+
   Future<void> _inicializar() async {
+    await _asegurarColumnasImpresion();
+    await _db.asegurarDatosInicialesDePrueba();
     await _normalizarFechasPedidos();
     await _consolidarItemsDuplicadosPedido(widget.pedidoId);
 
@@ -141,6 +160,8 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
       '''
       SELECT p.tipo, p.valor_domicilio, p.estado, p.referencia, p.cliente, p.mesero,
              COALESCE(p.numero_turno, 0) AS numero_turno,
+             COALESCE(p.impreso_cliente, 0) AS impreso_cliente,
+             COALESCE(p.impreso_cocina, 0) AS impreso_cocina,
              j.estado AS jornada_estado
       FROM pedidos p
       LEFT JOIN jornadas j ON j.id = p.jornada_id
@@ -157,9 +178,15 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
     final configParsed =
         double.tryParse(valorDomicilioConf?.valor ?? '5000') ?? 5000;
 
-    final rows = await (_db.select(_db.itemsPedido)
-          ..where((i) => i.pedidoId.equals(widget.pedidoId)))
-        .get();
+    final rows = await _db.customSelect(
+      '''
+      SELECT id, pedido_id, producto_id, nombre_producto, precio, cantidad, adicionales, nota
+      FROM items_pedido
+      WHERE pedido_id = ?
+      ORDER BY id ASC
+      ''',
+      variables: [Variable<int>(widget.pedidoId)],
+    ).get();
 
     final valDomDb = ((pedidoData['valor_domicilio'] as num?) ?? 0).toDouble();
 
@@ -169,32 +196,41 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
       _pedidoId = widget.pedidoId;
       _valorDomicilioPedido = valDomDb > 0 ? valDomDb : configParsed;
       _esDomicilio = (pedidoData['tipo'] as String?) == 'domicilio';
-      _cobrarDomicilio =
-          _esDomicilio && valDomDb > 0;
+      _cobrarDomicilio = _esDomicilio && valDomDb > 0;
       _estadoPedido = (pedidoData['estado'] as String?) ?? 'abierto';
       _referencia = ((pedidoData['referencia'] as String?) ?? '').trim();
       _cliente = ((pedidoData['cliente'] as String?) ?? '').trim();
       _mesero = ((pedidoData['mesero'] as String?) ?? '').trim();
       _numeroTurno = (pedidoData['numero_turno'] as int?) ?? 0;
+      _impresoCliente = ((pedidoData['impreso_cliente'] as int?) ?? 0) == 1;
+      _impresoCocina = ((pedidoData['impreso_cocina'] as int?) ?? 0) == 1;
       _jornadaEstaAbierta =
           (pedidoData['jornada_estado'] as String?) == 'abierta';
       _items
         ..clear()
         ..addAll(
-          rows.map(
-            (item) => ItemPedido(
-              id: item.id,
-              pedidoId: item.pedidoId,
-              productoId: item.productoId,
-              nombreProducto: item.nombreProducto,
-              precio: item.precio,
-              cantidad: item.cantidad,
-              adicionales: List<String>.from(
-                jsonDecode(item.adicionales) as List<dynamic>,
-              ),
-              nota: item.nota,
-            ),
-          ),
+          rows.map((row) {
+            final data = row.data;
+            return ItemPedido(
+              id: data['id'] as int,
+              pedidoId: data['pedido_id'] as int,
+              productoId: data['producto_id'] as int,
+              nombreProducto: (data['nombre_producto'] as String?) ?? '',
+              precio: (data['precio'] as num?)?.toDouble() ?? 0.0,
+              cantidad: (data['cantidad'] as int?) ?? 1,
+              adicionales: () {
+                try {
+                  final decoded =
+                      jsonDecode((data['adicionales'] as String?) ?? '[]');
+                  if (decoded is List) {
+                    return decoded.map((e) => e.toString()).toList();
+                  }
+                } catch (_) {}
+                return <String>[];
+              }(),
+              nota: (data['nota'] as String?) ?? '',
+            );
+          }),
         );
       _cargando = false;
     });
@@ -216,6 +252,45 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
         AND typeof(cerrado_en) = 'text'
         AND TRIM(cerrado_en) != ''
     ''');
+  }
+
+  Future<void> _mostrarAlertaSinProductosCocina() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(
+              Icons.warning_amber_rounded,
+              color: AppColors.comandaCocina,
+              size: 28,
+            ),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Orden de cocina sin productos',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'No hay productos en este pedido para generar la orden de cocina. '
+          'Toca el botón "+ Añadir" sobre cualquier producto de la lista para agregarlo primero.',
+        ),
+        actions: [
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.agregarProductos,
+            ),
+            onPressed: () => Navigator.pop(dialogContext),
+            icon: const Icon(Icons.check_rounded, size: 18),
+            label: const Text('Entendido'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _actualizarModoDomicilio({double? nuevoValor}) async {
@@ -254,8 +329,180 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
     setState(() => _estadoPedido = estado);
   }
 
+  Future<bool> _confirmarReimpresion({required bool esCocina}) async {
+    final yaImpreso = esCocina ? _impresoCocina : _impresoCliente;
+    if (!yaImpreso) return true;
+    if (!mounted) return false;
+
+    final codigo = codigoTurnoDesde(
+      _numeroTurno > 0 ? _numeroTurno : (_pedidoId ?? widget.pedidoId),
+    );
+    final titulo = esCocina
+        ? 'Orden de cocina ya impresa'
+        : 'Factura de cliente ya impresa';
+    final detalle = esCocina
+        ? 'La orden de cocina del pedido $codigo ya fue enviada a imprimir anteriormente. ¿Deseas volver a imprimir la orden de cocina?'
+        : 'La factura para el cliente del pedido $codigo ya fue impresa anteriormente. ¿Deseas volver a imprimir o ver la factura?';
+
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(
+              Icons.print_rounded,
+              color: esCocina ? AppColors.comandaCocina : AppColors.verTicket,
+              size: 26,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                titulo,
+                style:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+        content: Text(detalle),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor:
+                  esCocina ? AppColors.comandaCocina : AppColors.verTicket,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.replay_rounded, size: 18),
+            label: const Text('Sí, volver a imprimir'),
+          ),
+        ],
+      ),
+    );
+
+    return confirmar == true;
+  }
+
+  Future<void> _imprimirComandaCocina({bool previsualizar = false}) async {
+    if (_items.isEmpty) {
+      await _mostrarAlertaSinProductosCocina();
+      return;
+    }
+
+    final continuar = await _confirmarReimpresion(esCocina: true);
+    if (!continuar) return;
+
+    final data = await _construirTicketData(estado: _estadoPedido);
+
+    if (previsualizar) {
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              TicketPreviewScreen(data: data, modoCocinaInicial: true),
+        ),
+      );
+      await _inicializar();
+      return;
+    }
+
+    final printerId = await _leerConfig('printer_device_id');
+    final printerName =
+        await _leerConfig('printer_device_name', fallback: 'Impresora POS');
+    final anchoRaw = await _leerConfig('printer_paper_width', fallback: '32');
+    final ancho = AnchoPapelX.desdeCaracteres(int.tryParse(anchoRaw) ?? 32);
+
+    if (printerId.trim().isEmpty) {
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              TicketPreviewScreen(data: data, modoCocinaInicial: true),
+        ),
+      );
+      await _inicializar();
+      return;
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Enviando comanda a cocina (${data.codigoTurno})...'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+
+    try {
+      const printerService = BluetoothPrinterService();
+      final bytes = await buildEscPosCocinaBytes(data, ancho: ancho);
+      final dev = await printerService.connect(printerId);
+      final exito = dev != null && await printerService.printBytes(dev, bytes);
+
+      if (!mounted) return;
+      if (exito) {
+        await _db.customStatement(
+          'UPDATE pedidos SET impreso_cocina = 1 WHERE id = ?',
+          [_pedidoId ?? widget.pedidoId],
+        );
+        if (mounted) {
+          setState(() => _impresoCocina = true);
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'Comanda enviada a cocina en $printerName (${data.codigoTurno}). Marcada como ya impresa.'),
+            action: SnackBarAction(
+              label: 'Ver ticket',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => TicketPreviewScreen(
+                        data: data.copyWith(impresoCocina: true),
+                        modoCocinaInicial: true),
+                  ),
+                ).then((_) => _inicializar());
+              },
+            ),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text(
+                  'No se pudo imprimir automáticamente. Abriendo vista previa...')),
+        );
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) =>
+                TicketPreviewScreen(data: data, modoCocinaInicial: true),
+          ),
+        );
+        await _inicializar();
+      }
+    } catch (_) {
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              TicketPreviewScreen(data: data, modoCocinaInicial: true),
+        ),
+      );
+      await _inicializar();
+    }
+  }
+
   Future<TicketData> _construirTicketData({required String estado}) async {
-    final nombreNegocio = await _leerConfig('nombre_negocio', fallback: 'POSify');
+    final nombreNegocio =
+        await _leerConfig('nombre_negocio', fallback: 'POSify');
     return TicketData(
       nombreNegocio: nombreNegocio,
       pedidoId: _pedidoId ?? widget.pedidoId,
@@ -269,26 +516,36 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
       cobrarDomicilio: _cobrarDomicilio,
       estadoPedido: estado,
       fecha: DateTime.now(),
+      impresoCliente: _impresoCliente,
+      impresoCocina: _impresoCocina,
     );
   }
 
-  Future<void> _verTicketActual() async {
+  Future<void> _verTicketActual({bool modoCocina = false}) async {
+    if (_items.isEmpty) {
+      await _mostrarAlertaSinProductosCocina();
+      return;
+    }
+    final continuar = await _confirmarReimpresion(esCocina: modoCocina);
+    if (!continuar) return;
+
     final data = await _construirTicketData(estado: _estadoPedido);
     if (!mounted) return;
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => TicketPreviewScreen(data: data)),
+      MaterialPageRoute(
+        builder: (_) =>
+            TicketPreviewScreen(data: data, modoCocinaInicial: modoCocina),
+      ),
     );
+    await _inicializar();
   }
 
   Future<void> _cerrarPedidoDesdeDetalle() async {
     if (_pedidoId == null) return;
 
     if (_items.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Agrega productos antes de cerrar.')),
-      );
+      await _mostrarAlertaSinProductosCocina();
       return;
     }
 
@@ -333,11 +590,11 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Confirmar cancelacion'),
+        title: const Text('Confirmar cancelación'),
         content: Text(
           _items.isNotEmpty
-              ? 'Este pedido tiene ${_items.length} item(s). Estas segura de cancelarlo?'
-              : 'Estas segura de cancelar este pedido?',
+              ? 'Este pedido tiene ${_items.length} ítem(s). ¿Estás seguro de cancelarlo?'
+              : '¿Estás seguro de cancelar este pedido?',
         ),
         actions: [
           TextButton(
@@ -347,7 +604,7 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Si, cancelar'),
+            child: const Text('Sí, cancelar'),
           ),
         ],
       ),
@@ -609,7 +866,8 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
       nota: '',
     );
     return _items.indexWhere(
-      (item) => _firmaItem(
+      (item) =>
+          _firmaItem(
             productoId: item.productoId,
             precio: item.precio,
             adicionales: item.adicionales,
@@ -681,7 +939,8 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
               children: [
                 Text(
                   producto.nombre,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -693,7 +952,8 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
                 ),
                 const SizedBox(height: 16),
                 if (etiquetasDisponibles.isNotEmpty) ...[
-                  const Text('Adicionales', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const Text('Adicionales',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   AdicionalesChips(
                     adicionales: etiquetasDisponibles,
@@ -710,7 +970,7 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
                   controller: notaCtrl,
                   decoration: const InputDecoration(
                     labelText: 'Nota del mesero (opcional)',
-                    hintText: 'Ej: Sin cebolla, termino 3/4, extra salsa',
+                    hintText: 'Ej: Sin cebolla, término 3/4, extra salsa',
                   ),
                   maxLines: 2,
                 ),
@@ -723,12 +983,14 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
                       onDecrementar: () => setLocalState(() => cantidad--),
                     ),
                     const Spacer(),
-                    ElevatedButton(
+                    ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.accent,
+                        backgroundColor: AppColors.agregarProductos,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
                       ),
                       onPressed: () {
                         _agregarProductoConDatos(
@@ -739,9 +1001,12 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
                         );
                         Navigator.pop(sheetContext);
                       },
-                      child: Text(
-                        'Agregar · ${_formatMoney(producto.precio * cantidad)}',
-                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                      icon: const Icon(Icons.add_shopping_cart_rounded,
+                          size: 18),
+                      label: Text(
+                        'Añadir · ${_formatMoney(producto.precio * cantidad)}',
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w700),
                       ),
                     ),
                   ],
@@ -810,7 +1075,7 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Eliminar producto'),
-        content: Text('Deseas eliminar ${item.nombreProducto} del pedido?'),
+        content: Text('¿Deseas eliminar ${item.nombreProducto} del pedido?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -834,7 +1099,8 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
   }
 
   double get _subtotal => _items.fold(0, (s, i) => s + i.subtotal);
-  double get _domicilio => _esDomicilio && _cobrarDomicilio ? _valorDomicilioPedido : 0;
+  double get _domicilio =>
+      _esDomicilio && _cobrarDomicilio ? _valorDomicilioPedido : 0;
   double get _total => _subtotal + _domicilio;
 
   void _abrirCarritoEnSheet() {
@@ -864,6 +1130,7 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
               await _eliminarItem(item);
               setLocalState(() {});
             },
+            onImprimirComandaCocina: _imprimirComandaCocina,
             onCerrarPedido: () {
               Navigator.pop(sheetContext);
               _cerrarPedidoDesdeDetalle();
@@ -876,6 +1143,8 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final tieneProductos = _items.isNotEmpty;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       resizeToAvoidBottomInset: true,
@@ -886,7 +1155,8 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
           children: [
             if (_numeroTurno > 0) ...[
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.18),
                   borderRadius: BorderRadius.circular(100),
@@ -906,13 +1176,26 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
               child: Text(
                 widget.titulo,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.white),
+                style: const TextStyle(
+                    fontWeight: FontWeight.w700, color: Colors.white),
               ),
             ),
           ],
         ),
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
+          IconButton(
+            icon: Icon(
+              _impresoCocina
+                  ? Icons.check_circle_rounded
+                  : Icons.soup_kitchen_outlined,
+              color: Colors.white,
+            ),
+            tooltip: _impresoCocina
+                ? 'Orden de cocina (Ya impresa)'
+                : 'Imprimir comanda cocina',
+            onPressed: () => _imprimirComandaCocina(),
+          ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert, color: Colors.white),
             onSelected: (value) {
@@ -924,27 +1207,90 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
                 _mostrarModalDomicilio();
               } else if (value == 'ticket') {
                 _verTicketActual();
+              } else if (value == 'comanda') {
+                _imprimirComandaCocina(previsualizar: true);
               } else if (value == 'reabrir') {
                 _reabrirPedidoDesdeDetalle();
               }
             },
             itemBuilder: (context) => [
-              const PopupMenuItem<String>(
-                value: 'ticket',
-                child: Text('Vista previa / imprimir ticket'),
-              ),
-              const PopupMenuItem<String>(
-                value: 'domicilio',
-                child: Text('Domicilio'),
-              ),
-              if (_estadoPedido == 'abierto') ...const [
+              if (tieneProductos) ...[
                 PopupMenuItem<String>(
-                  value: 'cerrar',
-                  child: Text('Cerrar pedido'),
+                  value: 'comanda',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _impresoCocina
+                            ? Icons.check_circle_rounded
+                            : Icons.soup_kitchen_outlined,
+                        color: _impresoCocina
+                            ? AppColors.success
+                            : const Color(0xFFD97706),
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _impresoCocina
+                            ? 'Comanda cocina (Ya impresa)'
+                            : 'Imprimir comanda cocina',
+                      ),
+                    ],
+                  ),
                 ),
                 PopupMenuItem<String>(
+                  value: 'ticket',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _impresoCliente
+                            ? Icons.check_circle_rounded
+                            : Icons.receipt_long,
+                        color: _impresoCliente ? AppColors.success : null,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _impresoCliente
+                            ? 'Factura cliente (Ya impresa)'
+                            : 'Factura de venta (Cliente)',
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              const PopupMenuItem<String>(
+                value: 'domicilio',
+                child: Row(
+                  children: [
+                    Icon(Icons.delivery_dining_outlined, size: 20),
+                    SizedBox(width: 8),
+                    Text('Configurar domicilio'),
+                  ],
+                ),
+              ),
+              if (_estadoPedido == 'abierto') ...[
+                if (tieneProductos)
+                  const PopupMenuItem<String>(
+                    value: 'cerrar',
+                    child: Row(
+                      children: [
+                        Icon(Icons.point_of_sale_rounded,
+                            color: AppColors.cobrarCerrar, size: 20),
+                        SizedBox(width: 8),
+                        Text('Cerrar pedido'),
+                      ],
+                    ),
+                  ),
+                const PopupMenuItem<String>(
                   value: 'cancelar',
-                  child: Text('Cancelar pedido'),
+                  child: Row(
+                    children: [
+                      Icon(Icons.cancel_outlined,
+                          color: AppColors.error, size: 20),
+                      SizedBox(width: 8),
+                      Text('Cancelar pedido'),
+                    ],
+                  ),
                 ),
               ],
               if (_estadoPedido == 'cerrado' && _jornadaEstaAbierta)
@@ -963,17 +1309,20 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
         ],
       ),
       body: _cargando
-          ? const Center(child: CircularProgressIndicator(color: AppColors.accent))
+          ? const Center(
+              child: CircularProgressIndicator(color: AppColors.accent))
           : Column(
               children: [
                 if (_estadoPedido == 'cerrado')
                   Container(
                     width: double.infinity,
                     color: Colors.amber.shade100,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     child: Row(
                       children: [
-                        const Icon(Icons.info_outline, color: Colors.amber, size: 20),
+                        const Icon(Icons.info_outline,
+                            color: Colors.amber, size: 20),
                         const SizedBox(width: 8),
                         const Expanded(
                           child: Text(
@@ -1002,59 +1351,62 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
                 Expanded(
                   child: LayoutBuilder(
                     builder: (context, constraints) {
-                final esEscritorio = constraints.maxWidth >= _anchoBreakpointEscritorio;
+                      final esEscritorio =
+                          constraints.maxWidth >= _anchoBreakpointEscritorio;
 
-                final panelProductos = _ProductosPanel(
-                  onAgregarRapido: _agregarRapido,
-                  onQuitarRapido: _quitarRapido,
-                  cantidadEnCarrito: _cantidadSimpleEnCarrito,
-                  onPersonalizar: _personalizarYAgregar,
-                );
+                      final panelProductos = _ProductosPanel(
+                        onAgregarRapido: _agregarRapido,
+                        onQuitarRapido: _quitarRapido,
+                        cantidadEnCarrito: _cantidadSimpleEnCarrito,
+                        onPersonalizar: _personalizarYAgregar,
+                      );
 
-                if (esEscritorio) {
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(flex: 3, child: panelProductos),
-                      const VerticalDivider(width: 1),
-                      SizedBox(
-                        width: 360,
-                        child: _CarritoPanel(
-                          items: _items,
-                          subtotal: _subtotal,
-                          domicilio: _domicilio,
-                          total: _total,
-                          esDomicilio: _esDomicilio,
-                          onEditar: _editarItem,
-                          onEliminar: _eliminarItem,
-                          onCerrarPedido: _cerrarPedidoDesdeDetalle,
-                        ),
-                      ),
-                    ],
-                  );
-                }
+                      if (esEscritorio) {
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(flex: 3, child: panelProductos),
+                            const VerticalDivider(width: 1),
+                            SizedBox(
+                              width: 360,
+                              child: _CarritoPanel(
+                                items: _items,
+                                subtotal: _subtotal,
+                                domicilio: _domicilio,
+                                total: _total,
+                                esDomicilio: _esDomicilio,
+                                onEditar: _editarItem,
+                                onEliminar: _eliminarItem,
+                                onImprimirComandaCocina: _imprimirComandaCocina,
+                                onCerrarPedido: _cerrarPedidoDesdeDetalle,
+                              ),
+                            ),
+                          ],
+                        );
+                      }
 
-                return Stack(
-                  children: [
-                    Positioned.fill(
-                      bottom: 64,
-                      child: panelProductos,
-                    ),
-                    Align(
-                      alignment: Alignment.bottomCenter,
-                      child: _BarraCarritoInferior(
-                        cantidadItems: _items.fold(0, (s, i) => s + i.cantidad),
-                        total: _total,
-                        onTap: _abrirCarritoEnSheet,
-                      ),
-                    ),
-                  ],
-                );
-              },
+                      return Stack(
+                        children: [
+                          Positioned.fill(
+                            bottom: 64,
+                            child: panelProductos,
+                          ),
+                          Align(
+                            alignment: Alignment.bottomCenter,
+                            child: _BarraCarritoInferior(
+                              cantidadItems:
+                                  _items.fold(0, (s, i) => s + i.cantidad),
+                              total: _total,
+                              onTap: _abrirCarritoEnSheet,
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -1087,7 +1439,7 @@ class _BarraCarritoInferior extends StatelessWidget {
                 const SizedBox(width: 10),
                 Text(
                   cantidadItems == 0
-                      ? 'Carrito vacío'
+                      ? 'Carrito vacío (toca productos para añadir)'
                       : '$cantidadItems producto(s) · ${_formatMoney(total)}',
                   style: const TextStyle(
                     color: Colors.white,
@@ -1114,6 +1466,7 @@ class _CarritoPanel extends StatelessWidget {
   final ScrollController? scrollController;
   final Future<void> Function(ItemPedido item) onEditar;
   final Future<void> Function(ItemPedido item) onEliminar;
+  final VoidCallback? onImprimirComandaCocina;
   final VoidCallback onCerrarPedido;
 
   const _CarritoPanel({
@@ -1125,6 +1478,7 @@ class _CarritoPanel extends StatelessWidget {
     required this.onEditar,
     required this.onEliminar,
     required this.onCerrarPedido,
+    this.onImprimirComandaCocina,
     this.scrollController,
   });
 
@@ -1143,9 +1497,13 @@ class _CarritoPanel extends StatelessWidget {
         Expanded(
           child: items.isEmpty
               ? const Center(
-                  child: Text(
-                    'Aún no hay productos en el pedido.',
-                    style: TextStyle(color: AppColors.textMuted),
+                  child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text(
+                      'Aún no hay productos en el pedido.\nUsa el botón "+ Añadir" en los productos para comenzar.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppColors.textMuted),
+                    ),
                   ),
                 )
               : ListView.separated(
@@ -1158,9 +1516,12 @@ class _CarritoPanel extends StatelessWidget {
                     return Card(
                       elevation: 0,
                       color: AppColors.surface,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
                         child: Row(
                           children: [
                             Expanded(
@@ -1169,18 +1530,23 @@ class _CarritoPanel extends StatelessWidget {
                                 children: [
                                   Text(
                                     item.nombreProducto,
-                                    style: const TextStyle(fontWeight: FontWeight.w700),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.textPrimary,
+                                    ),
                                   ),
                                   Text(
                                     '${item.cantidad} x ${_formatMoney(item.precio)}',
                                     style: const TextStyle(
-                                        color: AppColors.textMuted, fontSize: 12),
+                                        color: AppColors.textMuted,
+                                        fontSize: 12),
                                   ),
                                   if (item.adicionales.isNotEmpty)
                                     Text(
                                       '+ ${item.adicionales.join(', ')}',
                                       style: const TextStyle(
-                                          color: AppColors.textMuted, fontSize: 12),
+                                          color: AppColors.textMuted,
+                                          fontSize: 12),
                                     ),
                                   if (item.nota.trim().isNotEmpty)
                                     Text(
@@ -1199,13 +1565,15 @@ class _CarritoPanel extends StatelessWidget {
                                 Text(
                                   _formatMoney(item.subtotal),
                                   style: const TextStyle(
-                                      fontWeight: FontWeight.w700, color: AppColors.primary),
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.primary),
                                 ),
                                 Row(
                                   children: [
                                     IconButton(
                                       visualDensity: VisualDensity.compact,
-                                      icon: const Icon(Icons.edit_outlined, size: 18),
+                                      icon: const Icon(Icons.edit_outlined,
+                                          size: 18),
                                       onPressed: () => onEditar(item),
                                     ),
                                     IconButton(
@@ -1225,37 +1593,56 @@ class _CarritoPanel extends StatelessWidget {
                   },
                 ),
         ),
-        Container(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-          decoration: const BoxDecoration(
-            border: Border(top: BorderSide(color: AppColors.surface, width: 2)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Text('Subtotal: ${_formatMoney(subtotal)}'),
-                  if (esDomicilio) ...[
-                    const SizedBox(width: 12),
-                    Text('Domicilio: ${_formatMoney(domicilio)}'),
+        if (items.isNotEmpty)
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+            decoration: const BoxDecoration(
+              border:
+                  Border(top: BorderSide(color: AppColors.surface, width: 2)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Text('Subtotal: ${_formatMoney(subtotal)}'),
+                    if (esDomicilio) ...[
+                      const SizedBox(width: 12),
+                      Text('Domicilio: ${_formatMoney(domicilio)}'),
+                    ],
                   ],
+                ),
+                const SizedBox(height: 10),
+                if (onImprimirComandaCocina != null) ...[
+                  OutlinedButton.icon(
+                    onPressed: onImprimirComandaCocina,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.comandaCocina,
+                      side: const BorderSide(color: AppColors.comandaCocina),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    icon: const Icon(Icons.soup_kitchen_outlined, size: 18),
+                    label: const Text('Imprimir Comanda Cocina',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
+                  ),
+                  const SizedBox(height: 8),
                 ],
-              ),
-              const SizedBox(height: 10),
-              FilledButton(
-                onPressed: items.isEmpty ? null : onCerrarPedido,
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
+                FilledButton.icon(
+                  onPressed: onCerrarPedido,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.cobrarCerrar,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  icon: const Icon(Icons.point_of_sale_rounded, size: 18),
+                  label: Text(
+                    'Cerrar pedido · ${_formatMoney(total)}',
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w700),
+                  ),
                 ),
-                child: Text(
-                  'Cerrar pedido · ${_formatMoney(total)}',
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
       ],
     );
   }
@@ -1337,27 +1724,50 @@ class _ProductosPanelState extends ConsumerState<_ProductosPanel> {
             child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              children: cats.map((c) {
-                final sel = catSelec == c.id;
-                return Padding(
+              children: [
+                Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ChoiceChip(
-                    label: Text(c.nombre),
-                    selected: sel,
+                    label: const Text('Todos'),
+                    selected: catSelec == null,
                     onSelected: (_) => ref
                         .read(categoriaSeleccionadaProvider.notifier)
-                        .state = sel ? null : c.id,
+                        .state = null,
                     selectedColor: AppColors.accent,
                     labelStyle: TextStyle(
-                      color: sel ? Colors.white : AppColors.textPrimary,
-                      fontWeight: FontWeight.w500,
+                      color:
+                          catSelec == null ? Colors.white : AppColors.textPrimary,
+                      fontWeight: FontWeight.w600,
                     ),
                     backgroundColor: AppColors.surface,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20)),
                     side: BorderSide.none,
                   ),
-                );
-              }).toList(),
+                ),
+                ...cats.map((c) {
+                  final sel = catSelec == c.id;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(c.nombre),
+                      selected: sel,
+                      onSelected: (_) => ref
+                          .read(categoriaSeleccionadaProvider.notifier)
+                          .state = sel ? null : c.id,
+                      selectedColor: AppColors.accent,
+                      labelStyle: TextStyle(
+                        color: sel ? Colors.white : AppColors.textPrimary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      backgroundColor: AppColors.surface,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20)),
+                      side: BorderSide.none,
+                    ),
+                  );
+                }),
+              ],
             ),
           ),
         ),
@@ -1415,32 +1825,37 @@ class _ProductosLista extends ConsumerWidget {
         : ref.watch(productosProvider);
 
     return productosAsync.when(
-      loading: () => const Center(child: CircularProgressIndicator(color: AppColors.accent)),
+      loading: () => const Center(
+          child: CircularProgressIndicator(color: AppColors.accent)),
       error: (e, _) => Center(child: Text('Error: $e')),
       data: (productos) {
         final q = query.trim().toLowerCase();
         final filtrados = q.isEmpty
             ? productos
-            : productos.where((p) => p.nombre.toLowerCase().contains(q)).toList();
+            : productos
+                .where((p) => p.nombre.toLowerCase().contains(q))
+                .toList();
 
         if (filtrados.isEmpty) {
           return const Center(
-            child: Text('Sin productos', style: TextStyle(color: AppColors.textMuted)),
+            child: Text('Sin productos',
+                style: TextStyle(color: AppColors.textMuted)),
           );
         }
 
         return GridView.builder(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
           gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 320,
-            mainAxisExtent: 126,
+            maxCrossAxisExtent: 340,
+            mainAxisExtent: 128,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
           ),
           itemCount: filtrados.length,
           itemBuilder: (_, i) {
             final producto = filtrados[i];
-            final etiquetas = etiquetasPorCategoria[producto.categoria.id] ?? const [];
+            final etiquetas =
+                etiquetasPorCategoria[producto.categoria.id] ?? const [];
             return _ProductoTileRapido(
               producto: producto,
               cantidad: cantidadEnCarrito(producto),
@@ -1472,13 +1887,26 @@ class _ProductoTileRapido extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final enCarrito = cantidad > 0;
+
     return Material(
-      color: AppColors.surface,
+      color: enCarrito
+          ? AppColors.agregarProductos.withValues(alpha: 0.08)
+          : AppColors.surface,
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: onPersonalizar,
-        child: Padding(
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: enCarrito
+                  ? AppColors.agregarProductos
+                  : AppColors.primary.withValues(alpha: 0.15),
+              width: enCarrito ? 1.5 : 1,
+            ),
+          ),
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
             children: [
@@ -1501,48 +1929,74 @@ class _ProductoTileRapido extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         producto.descripcion,
-                        maxLines: 1,
+                        maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+                        style: const TextStyle(
+                            fontSize: 11, color: AppColors.textMuted),
                       ),
                     ],
-                    const SizedBox(height: 2),
+                    const SizedBox(height: 4),
                     Text(
                       _formatMoney(producto.precio),
                       style: const TextStyle(
-                          fontWeight: FontWeight.w700, fontSize: 13.5, color: AppColors.accent),
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13.5,
+                        color: AppColors.primary,
+                      ),
                     ),
                   ],
                 ),
               ),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _BotonRedondo(
-                    icon: Icons.remove,
-                    habilitado: cantidad > 0,
-                    color: AppColors.textMuted,
-                    onTap: onQuitarRapido,
-                  ),
-                  SizedBox(
-                    width: 26,
-                    child: Text(
-                      '$cantidad',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary,
-                      ),
+              const SizedBox(width: 8),
+              if (!enCarrito)
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.agregarProductos,
+                    foregroundColor: Colors.white,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    visualDensity: VisualDensity.compact,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  _BotonRedondo(
-                    icon: Icons.add,
-                    habilitado: true,
-                    color: AppColors.accent,
-                    onTap: onAgregarRapido,
+                  onPressed: onAgregarRapido,
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: const Text(
+                    'Añadir',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
                   ),
-                ],
-              ),
+                )
+              else
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _BotonRedondo(
+                      icon: Icons.remove,
+                      habilitado: true,
+                      color: AppColors.error,
+                      onTap: onQuitarRapido,
+                    ),
+                    SizedBox(
+                      width: 28,
+                      child: Text(
+                        '$cantidad',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 14,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ),
+                    _BotonRedondo(
+                      icon: Icons.add,
+                      habilitado: true,
+                      color: AppColors.agregarProductos,
+                      onTap: onAgregarRapido,
+                    ),
+                  ],
+                ),
             ],
           ),
         ),
@@ -1573,9 +2027,9 @@ class _BotonRedondo extends StatelessWidget {
         customBorder: const CircleBorder(),
         onTap: habilitado ? onTap : null,
         child: SizedBox(
-          width: 28,
-          height: 28,
-          child: Icon(icon, color: Colors.white, size: 16),
+          width: 30,
+          height: 30,
+          child: Icon(icon, color: Colors.white, size: 17),
         ),
       ),
     );

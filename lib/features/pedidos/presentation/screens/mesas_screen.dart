@@ -8,7 +8,10 @@ import '../../../../core/constants/app_strings.dart';
 import '../../../../core/utils/money_formatter.dart';
 import '../../../../database/app_database.dart';
 import '../../../../injection_container.dart';
+import '../../../impresion/bluetooth_printer_service.dart';
+import '../../../impresion/ticket_builder.dart';
 import '../../../impresion/ticket_data.dart';
+import '../../../productos/presentation/providers/productos_provider.dart';
 import '../../domain/entities/item_pedido.dart';
 import 'admin_config_screen.dart';
 import 'jornada_historial_screen.dart';
@@ -33,6 +36,11 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
   List<_JornadaResumen> _jornadas = const [];
   _JornadaResumen? _jornadaSeleccionada;
   List<_PedidoResumen> _pedidos = const [];
+  Map<String, int> _conteoPorEstado = const {
+    'abierto': 0,
+    'cerrado': 0,
+    'cancelado': 0,
+  };
   DateTime? _fechaCalendarioCerradas;
   String _rangoCerradas = 'todo'; // todo | hoy | semana | mes
 
@@ -59,6 +67,12 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     setState(() => _loading = true);
 
     await _asegurarEstructuraJornadas();
+    await _db.asegurarDatosInicialesDePrueba();
+    if (mounted) {
+      ref.invalidate(categoriasProvider);
+      ref.invalidate(productosProvider);
+      ref.invalidate(adicionalesProvider);
+    }
 
     final jornadasRows = await _db.customSelect(
       '''
@@ -155,6 +169,30 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       jornadaSeleccionada = jornadasConTotal.first;
     }
 
+    final conteoEstados = <String, int>{
+      'abierto': 0,
+      'cerrado': 0,
+      'cancelado': 0,
+    };
+    if (jornadaSeleccionada != null) {
+      final conteoRows = await _db.customSelect(
+        '''
+        SELECT estado, COUNT(*) AS cnt
+        FROM pedidos
+        WHERE jornada_id = ?
+        GROUP BY estado
+        ''',
+        variables: [Variable<int>(jornadaSeleccionada.id)],
+      ).get();
+      for (final r in conteoRows) {
+        final est = (r.data['estado'] as String?) ?? '';
+        final cnt = (r.data['cnt'] as int?) ?? 0;
+        if (conteoEstados.containsKey(est)) {
+          conteoEstados[est] = cnt;
+        }
+      }
+    }
+
     final pedidos = jornadaSeleccionada == null
         ? <_PedidoResumen>[]
         : await _obtenerPedidosJornada(
@@ -168,6 +206,7 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       _jornadas = jornadasConTotal;
       _jornadaSeleccionada = jornadaSeleccionada;
       _pedidos = pedidos;
+      _conteoPorEstado = conteoEstados;
       _loading = false;
     });
   }
@@ -197,6 +236,12 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     );
     await _ejecutarSeguro(
       "ALTER TABLE pedidos ADD COLUMN numero_turno INTEGER",
+    );
+    await _ejecutarSeguro(
+      "ALTER TABLE pedidos ADD COLUMN impreso_cliente INTEGER NOT NULL DEFAULT 0",
+    );
+    await _ejecutarSeguro(
+      "ALTER TABLE pedidos ADD COLUMN impreso_cocina INTEGER NOT NULL DEFAULT 0",
     );
 
     await _asegurarClaveConfig('valor_domicilio', '5000');
@@ -266,7 +311,9 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     final rows = await _db.customSelect(
       '''
       SELECT id, tipo, estado, referencia, cliente, mesero, valor_domicilio,
-             COALESCE(numero_turno, 0) AS numero_turno
+             COALESCE(numero_turno, 0) AS numero_turno,
+             COALESCE(impreso_cliente, 0) AS impreso_cliente,
+             COALESCE(impreso_cocina, 0) AS impreso_cocina
       FROM pedidos
       WHERE jornada_id = ? AND estado = ?
       ORDER BY id DESC
@@ -289,6 +336,19 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       ).getSingle();
       final statData = itemsStats.data;
 
+      final itemsRows = await _db.customSelect(
+        '''
+        SELECT nombre_producto, cantidad
+        FROM items_pedido
+        WHERE pedido_id = ?
+        ORDER BY id ASC
+        ''',
+        variables: [Variable<int>(pedidoId)],
+      ).get();
+      final resumenItems = itemsRows
+          .map((r) => '${r.data['cantidad']}x ${r.data['nombre_producto']}')
+          .toList();
+
       pedidos.add(_PedidoResumen(
         id: data['id'] as int,
         tipo: (data['tipo'] as String?) ?? 'mesa',
@@ -300,9 +360,76 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
         subtotal: (statData['subtotal'] as num?)?.toDouble() ?? 0,
         valorDomicilio: (data['valor_domicilio'] as num?)?.toDouble() ?? 0,
         numeroTurno: (data['numero_turno'] as int?) ?? 0,
+        impresoCliente: ((data['impreso_cliente'] as int?) ?? 0) == 1,
+        impresoCocina: ((data['impreso_cocina'] as int?) ?? 0) == 1,
+        resumenItems: resumenItems,
       ));
     }
     return pedidos;
+  }
+
+  Future<void> _abrirPantallaProductos(_PedidoResumen pedido) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PedidoScreen(
+          pedidoId: pedido.id,
+          titulo: pedido.referencia.isNotEmpty
+              ? pedido.referencia
+              : 'Pedido ${pedido.id}',
+          esDomicilio: pedido.tipo == 'domicilio',
+        ),
+      ),
+    );
+    await _cargarDatos();
+  }
+
+  Future<void> _mostrarAlertaSinProductosCocina({_PedidoResumen? pedido}) async {
+    if (!mounted) return;
+    final irAAgregar = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(
+              Icons.warning_amber_rounded,
+              color: AppColors.comandaCocina,
+              size: 28,
+            ),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Orden de cocina sin productos',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'No hay productos registrados en esta orden de cocina. '
+          'Por favor, añade al menos un producto al pedido antes de ver o enviar la comanda a cocina.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Entendido'),
+          ),
+          if (pedido != null && pedido.estado == 'abierto')
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.agregarProductos,
+              ),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              icon: const Icon(Icons.add_shopping_cart_rounded, size: 18),
+              label: const Text('Añadir productos'),
+            ),
+        ],
+      ),
+    );
+
+    if (irAAgregar == true && pedido != null) {
+      await _abrirPantallaProductos(pedido);
+    }
   }
 
   Future<void> _crearJornada() async {
@@ -345,10 +472,11 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancelar'),
           ),
-          ElevatedButton(
+          ElevatedButton.icon(
             onPressed: () =>
                 Navigator.pop(dialogContext, nombreController.text),
-            child: const Text('Crear'),
+            icon: const Icon(Icons.check_rounded, size: 18),
+            label: const Text('Crear'),
           ),
         ],
       ),
@@ -517,15 +645,29 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setLocalState) => AlertDialog(
-          title: const Text('Nuevo pedido'),
+          title: const Row(
+            children: [
+              Icon(Icons.add_circle_rounded, color: AppColors.nuevoPedido),
+              SizedBox(width: 8),
+              Text('Nuevo pedido'),
+            ],
+          ),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 SegmentedButton<String>(
                   segments: const [
-                    ButtonSegment(value: 'mesa', label: Text('Mesa')),
-                    ButtonSegment(value: 'domicilio', label: Text('Domicilio')),
+                    ButtonSegment(
+                      value: 'mesa',
+                      icon: Icon(Icons.table_restaurant_rounded, size: 18),
+                      label: Text('Mesa'),
+                    ),
+                    ButtonSegment(
+                      value: 'domicilio',
+                      icon: Icon(Icons.delivery_dining_rounded, size: 18),
+                      label: Text('Domicilio'),
+                    ),
                   ],
                   selected: {tipo},
                   onSelectionChanged: (value) {
@@ -536,8 +678,13 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                 TextField(
                   controller: referenciaCtrl,
                   decoration: InputDecoration(
+                    prefixIcon: Icon(
+                      tipo == 'mesa'
+                          ? Icons.table_bar_rounded
+                          : Icons.location_on_outlined,
+                    ),
                     labelText: tipo == 'mesa'
-                        ? 'Referencia (Mesa 1)'
+                        ? 'Referencia (Ej: Mesa 1)'
                         : 'Dirección o referencia',
                   ),
                 ),
@@ -547,6 +694,7 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                     controller: valorDomicilioCtrl,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.attach_money_rounded),
                       labelText: 'Precio del domicilio (\$)',
                       hintText: 'Ej: 5000',
                     ),
@@ -556,16 +704,18 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                 TextField(
                   controller: clienteCtrl,
                   decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.person_outline_rounded),
                     labelText: 'Cliente (opcional)',
                   ),
                 ),
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String>(
-                  value: meseroSeleccionado,
+                  initialValue: meseroSeleccionado,
                   decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.badge_outlined),
                     labelText: 'Mesero (opcional)',
                     helperText: meseros.isEmpty
-                        ? 'Crea meseros en Configuracion para verlos aqui.'
+                        ? 'Crea meseros en Configuración para verlos aquí.'
                         : null,
                   ),
                   items: [
@@ -592,9 +742,14 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
               onPressed: () => Navigator.pop(dialogContext, false),
               child: const Text('Cancelar'),
             ),
-            ElevatedButton(
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.nuevoPedido,
+                foregroundColor: Colors.white,
+              ),
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Crear pedido'),
+              icon: const Icon(Icons.add_shopping_cart_rounded, size: 18),
+              label: const Text('Crear y añadir productos'),
             ),
           ],
         ),
@@ -613,29 +768,39 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     ).getSingle();
     final numeroTurno = ((maxTurnoRow.data['max_turno'] as int?) ?? 0) + 1;
 
-    await _db.customStatement(
+    final nuevoPedidoId = await _db.customInsert(
       '''
       INSERT INTO pedidos (mesa_id, tipo, valor_domicilio, estado, creado_en, jornada_id, referencia, cliente, mesero, numero_turno)
       VALUES (NULL, ?, ?, 'abierto', ?, ?, ?, ?, ?, ?)
       ''',
-      [
-        tipo,
-        valorDomicilio,
-        _nowEpochMs(),
-        jornada.id,
-        referenciaCtrl.text.trim(),
-        clienteCtrl.text.trim(),
-        meseroSeleccionado.trim(),
-        numeroTurno,
+      variables: [
+        Variable<String>(tipo),
+        Variable<double>(valorDomicilio),
+        Variable<int>(_nowEpochMs()),
+        Variable<int>(jornada.id),
+        Variable<String>(referenciaCtrl.text.trim()),
+        Variable<String>(clienteCtrl.text.trim()),
+        Variable<String>(meseroSeleccionado.trim()),
+        Variable<int>(numeroTurno),
       ],
     );
 
+    _filtroPedidos = 'abierto';
     await _cargarDatos();
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Pedido creado: ${codigoTurnoDesde(numeroTurno)}')),
+    final refTexto = referenciaCtrl.text.trim();
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PedidoScreen(
+          pedidoId: nuevoPedidoId,
+          titulo: refTexto.isNotEmpty ? refTexto : 'Pedido $nuevoPedidoId',
+          esDomicilio: tipo == 'domicilio',
+        ),
+      ),
     );
+    await _cargarDatos();
   }
 
   Future<void> _editarPedidoAbierto(_PedidoResumen pedido) async {
@@ -657,7 +822,13 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setLocalState) => AlertDialog(
-          title: Text('Editar pedido #${pedido.id}'),
+          title: Row(
+            children: [
+              const Icon(Icons.edit_note_rounded, color: AppColors.editarDatos),
+              const SizedBox(width: 8),
+              Text('Editar datos #${pedido.id}'),
+            ],
+          ),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -667,7 +838,7 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                   decoration: InputDecoration(
                     labelText: pedido.tipo == 'mesa'
                         ? 'Mesa o referencia'
-                        : 'Direccion o referencia',
+                        : 'Dirección o referencia',
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -679,11 +850,11 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                 ),
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String>(
-                  value: meseroSeleccionado,
+                  initialValue: meseroSeleccionado,
                   decoration: InputDecoration(
                     labelText: 'Mesero (opcional)',
                     helperText: meseros.isEmpty
-                        ? 'Crea meseros en Configuracion para verlos aqui.'
+                        ? 'Crea meseros en Configuración para verlos aquí.'
                         : null,
                   ),
                   items: [
@@ -710,9 +881,10 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
               onPressed: () => Navigator.pop(dialogContext, false),
               child: const Text('Cancelar'),
             ),
-            ElevatedButton(
+            ElevatedButton.icon(
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Guardar cambios'),
+              icon: const Icon(Icons.save_outlined, size: 18),
+              label: const Text('Guardar cambios'),
             ),
           ],
         ),
@@ -738,7 +910,7 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'No se pudo editar el pedido porque ya no esta abierto.',
+            'No se pudo editar el pedido porque ya no está abierto.',
           ),
         ),
       );
@@ -765,32 +937,40 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     _PedidoResumen pedido, {
     required String estado,
   }) async {
-    final itemsRows = await (_db.select(_db.itemsPedido)
-          ..where((i) => i.pedidoId.equals(pedido.id)))
-        .get();
+    final rows = await _db.customSelect(
+      '''
+      SELECT id, pedido_id, producto_id, nombre_producto, precio, cantidad, adicionales, nota
+      FROM items_pedido
+      WHERE pedido_id = ?
+      ORDER BY id ASC
+      ''',
+      variables: [Variable<int>(pedido.id)],
+    ).get();
 
-    final items = itemsRows
-        .map(
-          (row) => ItemPedido(
-            id: row.id,
-            pedidoId: row.pedidoId,
-            productoId: row.productoId,
-            nombreProducto: row.nombreProducto,
-            precio: row.precio,
-            cantidad: row.cantidad,
-            adicionales: () {
-              try {
-                final decoded = jsonDecode(row.adicionales);
-                if (decoded is List) return decoded.map((e) => e.toString()).toList();
-              } catch (_) {}
-              return <String>[];
-            }(),
-            nota: row.nota,
-          ),
-        )
-        .toList();
+    final items = rows.map((r) {
+      final row = r.data;
+      return ItemPedido(
+        id: row['id'] as int,
+        pedidoId: row['pedido_id'] as int,
+        productoId: row['producto_id'] as int,
+        nombreProducto: (row['nombre_producto'] as String?) ?? '',
+        precio: (row['precio'] as num?)?.toDouble() ?? 0.0,
+        cantidad: (row['cantidad'] as int?) ?? 1,
+        adicionales: () {
+          try {
+            final decoded = jsonDecode((row['adicionales'] as String?) ?? '[]');
+            if (decoded is List) {
+              return decoded.map((e) => e.toString()).toList();
+            }
+          } catch (_) {}
+          return <String>[];
+        }(),
+        nota: (row['nota'] as String?) ?? '',
+      );
+    }).toList();
 
-    final nombreNegocio = await _leerConfig('nombre_negocio', fallback: 'POSify');
+    final nombreNegocio =
+        await _leerConfig('nombre_negocio', fallback: 'POSify');
 
     return TicketData(
       nombreNegocio: nombreNegocio,
@@ -805,30 +985,232 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       cobrarDomicilio: pedido.valorDomicilio > 0,
       estadoPedido: estado,
       fecha: DateTime.now(),
+      impresoCliente: pedido.impresoCliente,
+      impresoCocina: pedido.impresoCocina,
     );
   }
 
-  Future<void> _verTicket(_PedidoResumen pedido) async {
+  Future<bool> _confirmarReimpresionPedido(
+    _PedidoResumen pedido, {
+    required bool esCocina,
+  }) async {
+    final yaImpreso = esCocina ? pedido.impresoCocina : pedido.impresoCliente;
+    if (!yaImpreso) return true;
+    if (!mounted) return false;
+
+    final codigo = codigoTurnoDesde(
+      pedido.numeroTurno > 0 ? pedido.numeroTurno : pedido.id,
+    );
+    final titulo = esCocina
+        ? 'Orden de cocina ya impresa'
+        : 'Factura de cliente ya impresa';
+    final detalle = esCocina
+        ? 'La orden de cocina del pedido $codigo ya fue enviada a imprimir anteriormente. ¿Deseas volver a imprimir la orden de cocina?'
+        : 'La factura para el cliente del pedido $codigo ya fue impresa anteriormente. ¿Deseas volver a imprimir o ver la factura?';
+
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(
+              Icons.print_rounded,
+              color: esCocina ? AppColors.comandaCocina : AppColors.verTicket,
+              size: 26,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                titulo,
+                style:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+        content: Text(detalle),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor:
+                  esCocina ? AppColors.comandaCocina : AppColors.verTicket,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.replay_rounded, size: 18),
+            label: const Text('Sí, volver a imprimir'),
+          ),
+        ],
+      ),
+    );
+
+    return confirmar == true;
+  }
+
+  Future<void> _verTicket(
+    _PedidoResumen pedido, {
+    bool modoCocina = false,
+  }) async {
+    if (pedido.itemsCount <= 0) {
+      await _mostrarAlertaSinProductosCocina(pedido: pedido);
+      return;
+    }
+
+    final continuar =
+        await _confirmarReimpresionPedido(pedido, esCocina: modoCocina);
+    if (!continuar) return;
+
     final data = await _construirTicketData(pedido, estado: pedido.estado);
     if (!mounted) return;
+    if (data.items.isEmpty) {
+      await _mostrarAlertaSinProductosCocina(pedido: pedido);
+      return;
+    }
+
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => TicketPreviewScreen(data: data)),
+      MaterialPageRoute(
+        builder: (_) =>
+            TicketPreviewScreen(data: data, modoCocinaInicial: modoCocina),
+      ),
     );
+    await _cargarDatos();
+  }
+
+  Future<void> _imprimirComandaCocina(
+    _PedidoResumen pedido, {
+    bool previsualizar = false,
+  }) async {
+    if (pedido.itemsCount <= 0) {
+      await _mostrarAlertaSinProductosCocina(pedido: pedido);
+      return;
+    }
+
+    final continuar =
+        await _confirmarReimpresionPedido(pedido, esCocina: true);
+    if (!continuar) return;
+
+    final data = await _construirTicketData(pedido, estado: pedido.estado);
+    if (!mounted) return;
+
+    if (data.items.isEmpty) {
+      await _mostrarAlertaSinProductosCocina(pedido: pedido);
+      return;
+    }
+
+    if (previsualizar) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              TicketPreviewScreen(data: data, modoCocinaInicial: true),
+        ),
+      );
+      await _cargarDatos();
+      return;
+    }
+
+    final printerId = await _leerConfig('printer_device_id');
+    final printerName =
+        await _leerConfig('printer_device_name', fallback: 'POS');
+    final anchoRaw = await _leerConfig('printer_paper_width', fallback: '32');
+    final ancho = AnchoPapelX.desdeCaracteres(int.tryParse(anchoRaw) ?? 32);
+
+    if (printerId.isEmpty) {
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              TicketPreviewScreen(data: data, modoCocinaInicial: true),
+        ),
+      );
+      await _cargarDatos();
+      return;
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Enviando comanda a cocina ($printerName)...'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+
+    try {
+      const printerService = BluetoothPrinterService();
+      final bytes = await buildEscPosCocinaBytes(data, ancho: ancho);
+      final dev = await printerService.connect(printerId);
+      final exito = dev != null && await printerService.printBytes(dev, bytes);
+
+      if (!mounted) return;
+      if (exito) {
+        await _db.customStatement(
+          'UPDATE pedidos SET impreso_cocina = 1 WHERE id = ?',
+          [pedido.id],
+        );
+        await _cargarDatos();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'Comanda enviada a cocina (${data.codigoTurno}). Marcada como ya impresa.'),
+            action: SnackBarAction(
+              label: 'Ver ticket',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => TicketPreviewScreen(
+                        data: data.copyWith(impresoCocina: true),
+                        modoCocinaInicial: true),
+                  ),
+                ).then((_) => _cargarDatos());
+              },
+            ),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text(
+                  'No se pudo imprimir automáticamente. Abriendo vista previa...')),
+        );
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) =>
+                TicketPreviewScreen(data: data, modoCocinaInicial: true),
+          ),
+        );
+        await _cargarDatos();
+      }
+    } catch (_) {
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              TicketPreviewScreen(data: data, modoCocinaInicial: true),
+        ),
+      );
+      await _cargarDatos();
+    }
   }
 
   Future<void> _cerrarPedidoConImpresion(_PedidoResumen pedido) async {
     if (pedido.itemsCount == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Agrega productos antes de cerrar.')),
-      );
+      await _mostrarAlertaSinProductosCocina(pedido: pedido);
       return;
     }
 
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Cerrar pedido'),
+        title: const Text('Cerrar y cobrar pedido'),
         content: const Text(
           'Se generará la factura final con el código de turno. ¿Deseas continuar?',
         ),
@@ -837,9 +1219,13 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
             onPressed: () => Navigator.pop(dialogContext, false),
             child: const Text('Cancelar'),
           ),
-          FilledButton(
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.cobrarCerrar,
+            ),
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Cerrar pedido'),
+            icon: const Icon(Icons.point_of_sale_rounded, size: 18),
+            label: const Text('Cerrar pedido'),
           ),
         ],
       ),
@@ -855,6 +1241,7 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       context,
       MaterialPageRoute(builder: (_) => TicketPreviewScreen(data: data)),
     );
+    await _cargarDatos();
   }
 
   Future<void> _confirmarCancelacion(_PedidoResumen pedido) async {
@@ -863,21 +1250,25 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Confirmar cancelacion'),
+        title: const Text('Confirmar cancelación'),
         content: Text(
           tieneProductos
-              ? 'Este pedido tiene ${pedido.itemsCount} producto(s). Estas segura de cancelarlo?'
-              : 'Estas segura de cancelar este pedido?',
+              ? 'Este pedido tiene ${pedido.itemsCount} producto(s). ¿Estás seguro de cancelarlo?'
+              : '¿Estás seguro de cancelar este pedido?',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
             child: const Text('No'),
           ),
-          ElevatedButton(
+          ElevatedButton.icon(
             onPressed: () => Navigator.pop(dialogContext, true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
-            child: const Text('Si, cancelar'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.error,
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.cancel_outlined, size: 18),
+            label: const Text('Sí, cancelar'),
           ),
         ],
       ),
@@ -907,16 +1298,17 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Reabrir pedido'),
         content: Text(
-          '¿Deseas reabrir el pedido $codigo? El pedido cambiará a estado abierto para que puedas agregar más productos.',
+          '¿Deseas reabrir el pedido $codigo? El pedido cambiará a estado abierto para que puedas agregar o editar productos.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
             child: const Text('Cancelar'),
           ),
-          FilledButton(
+          FilledButton.icon(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Reabrir pedido'),
+            icon: const Icon(Icons.lock_open_rounded, size: 18),
+            label: const Text('Reabrir pedido'),
           ),
         ],
       ),
@@ -946,14 +1338,14 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
           '${AppStrings.appName} - Jornadas',
           style: TextStyle(
             fontWeight: FontWeight.w700,
-            fontSize: 22,
+            fontSize: 21,
             color: Colors.white,
           ),
         ),
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
           IconButton(
-            tooltip: 'Configuracion',
+            tooltip: 'Configuración',
             icon: const Icon(Icons.settings_outlined),
             onPressed: () => Navigator.push(
               context,
@@ -969,8 +1361,9 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Barra superior: Selector Abiertas / Cerradas + Nueva Jornada
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
                   child: Row(
                     children: [
                       Expanded(
@@ -978,21 +1371,27 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                           style: ButtonStyle(
                             visualDensity: VisualDensity.standard,
                             textStyle: WidgetStateProperty.all(
-                              const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                              const TextStyle(
+                                  fontSize: 13, fontWeight: FontWeight.w700),
                             ),
                             padding: WidgetStateProperty.all(
-                              const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 8),
                             ),
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
                           segments: const [
                             ButtonSegment(
                               value: 'abiertas',
-                              label: Text('Abiertas', maxLines: 1, softWrap: false),
+                              icon: Icon(Icons.storefront_rounded, size: 17),
+                              label: Text('Abiertas',
+                                  maxLines: 1, softWrap: false),
                             ),
                             ButtonSegment(
                               value: 'cerradas',
-                              label: Text('Cerradas', maxLines: 1, softWrap: false),
+                              icon: Icon(Icons.history_rounded, size: 17),
+                              label: Text('Cerradas',
+                                  maxLines: 1, softWrap: false),
                             ),
                           ],
                           selected: {_vistaJornadas},
@@ -1004,9 +1403,15 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      ElevatedButton.icon(
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.primaryDark,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
+                        ),
                         onPressed: _crearJornada,
-                        icon: const Icon(Icons.add),
+                        icon: const Icon(Icons.add_business_rounded, size: 18),
                         label: const Text('Nueva jornada'),
                       ),
                     ],
@@ -1015,11 +1420,42 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                 if (_vistaJornadas == 'cerradas')
                   Expanded(child: _buildJornadasCerradas())
                 else if (_jornadas.isEmpty)
-                  const Expanded(
+                  Expanded(
                     child: Center(
-                      child: Text(
-                        'No hay jornadas en esta vista.',
-                        style: TextStyle(color: AppColors.textMuted),
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.storefront_outlined,
+                              size: 56,
+                              color: AppColors.textMuted,
+                            ),
+                            const SizedBox(height: 12),
+                            const Text(
+                              'No hay jornadas abiertas en este momento.',
+                              style: TextStyle(
+                                color: AppColors.textPrimary,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 16,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Crea una nueva jornada para empezar a registrar pedidos.',
+                              style: TextStyle(color: AppColors.textMuted),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 16),
+                            FilledButton.icon(
+                              onPressed: _crearJornada,
+                              icon: const Icon(Icons.add_business_rounded),
+                              label: const Text('Abrir nueva jornada'),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   )
@@ -1031,9 +1467,12 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           DropdownButtonFormField<int>(
-                            value: _jornadaSeleccionada?.id,
+                            key: ValueKey(_jornadaSeleccionada?.id),
+                            initialValue: _jornadaSeleccionada?.id,
                             decoration: const InputDecoration(
-                              labelText: 'Jornada',
+                              labelText: 'Jornada activa',
+                              prefixIcon: Icon(Icons.calendar_today_rounded),
+                              isDense: true,
                             ),
                             items: _jornadas
                                 .map(
@@ -1050,227 +1489,155 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                             },
                           ),
                           const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              if (_jornadaSeleccionada?.estado == 'abierta') ...[
-                                ElevatedButton.icon(
-                                  onPressed: _crearPedido,
-                                  icon: const Icon(Icons.receipt_long),
-                                  label: const Text('Nuevo pedido'),
+                          // Botón de Nuevo Pedido muy visible y llamativo + Cerrar Jornada con color representativo
+                          if (_jornadaSeleccionada?.estado == 'abierta') ...[
+                            Row(
+                              children: [
+                                Expanded(
+                                  flex: 3,
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: AppColors.nuevoPedido,
+                                      foregroundColor: Colors.white,
+                                      elevation: 3,
+                                      shadowColor: AppColors.nuevoPedido
+                                          .withValues(alpha: 0.45),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 16, vertical: 13),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                    ),
+                                    onPressed: _crearPedido,
+                                    icon: const Icon(
+                                        Icons.add_circle_rounded,
+                                        size: 22),
+                                    label: const Text(
+                                      'NUEVO PEDIDO',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 14.5,
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                                OutlinedButton.icon(
-                                  onPressed: () =>
-                                      _cerrarJornada(_jornadaSeleccionada!),
-                                  icon: const Icon(Icons.lock_outline),
-                                  label: const Text('Cerrar jornada'),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  flex: 2,
+                                  child: OutlinedButton.icon(
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: const Color(0xFF9A3412),
+                                      backgroundColor: const Color(0xFFFFF7ED),
+                                      side: const BorderSide(
+                                        color: Color(0xFFEA580C),
+                                        width: 1.2,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 10, vertical: 13),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                    ),
+                                    onPressed: () =>
+                                        _cerrarJornada(_jornadaSeleccionada!),
+                                    icon: const Icon(Icons.lock_outline_rounded,
+                                        size: 18),
+                                    label: const Text(
+                                      'Cerrar jornada',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ],
+                            ),
+                            const SizedBox(height: 10),
+                          ],
+                          // Filtros Abiertos / Cerrados / Cancelados repartidos equitativamente con íconos y colores
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _BotonEstadoFiltro(
+                                  label: 'Abiertos',
+                                  count: _conteoPorEstado['abierto'] ?? 0,
+                                  icon: Icons.timelapse_rounded,
+                                  color: AppColors.warning,
+                                  selected: _filtroPedidos == 'abierto',
+                                  onTap: () async {
+                                    _filtroPedidos = 'abierto';
+                                    await _cargarDatos();
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: _BotonEstadoFiltro(
+                                  label: 'Cerrados',
+                                  count: _conteoPorEstado['cerrado'] ?? 0,
+                                  icon: Icons.check_circle_outline_rounded,
+                                  color: AppColors.success,
+                                  selected: _filtroPedidos == 'cerrado',
+                                  onTap: () async {
+                                    _filtroPedidos = 'cerrado';
+                                    await _cargarDatos();
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: _BotonEstadoFiltro(
+                                  label: 'Cancelados',
+                                  count: _conteoPorEstado['cancelado'] ?? 0,
+                                  icon: Icons.cancel_outlined,
+                                  color: AppColors.error,
+                                  selected: _filtroPedidos == 'cancelado',
+                                  onTap: () async {
+                                    _filtroPedidos = 'cancelado';
+                                    await _cargarDatos();
+                                  },
+                                ),
+                              ),
                             ],
                           ),
                           const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 8,
-                            children: [
-                              _FiltroChip(
-                                label: 'Abiertos',
-                                selected: _filtroPedidos == 'abierto',
-                                onTap: () async {
-                                  _filtroPedidos = 'abierto';
-                                  await _cargarDatos();
-                                },
-                              ),
-                              _FiltroChip(
-                                label: 'Cerrados',
-                                selected: _filtroPedidos == 'cerrado',
-                                onTap: () async {
-                                  _filtroPedidos = 'cerrado';
-                                  await _cargarDatos();
-                                },
-                              ),
-                              _FiltroChip(
-                                label: 'Cancelados',
-                                selected: _filtroPedidos == 'cancelado',
-                                onTap: () async {
-                                  _filtroPedidos = 'cancelado';
-                                  await _cargarDatos();
-                                },
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
                           Expanded(
                             child: _pedidos.isEmpty
-                                ? const Center(
-                                    child: Text(
-                                      'No hay pedidos para este filtro.',
-                                      style:
-                                          TextStyle(color: AppColors.textMuted),
+                                ? Center(
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          _filtroPedidos == 'abierto'
+                                              ? Icons.receipt_long_outlined
+                                              : (_filtroPedidos == 'cerrado'
+                                                  ? Icons.task_alt_rounded
+                                                  : Icons.cancel_outlined),
+                                          size: 46,
+                                          color: AppColors.textMuted,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          'No hay pedidos $_filtroPedidos' 's en esta jornada.',
+                                          style: const TextStyle(
+                                            color: AppColors.textMuted,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   )
                                 : ListView.separated(
+                                    padding: const EdgeInsets.only(bottom: 16),
                                     itemCount: _pedidos.length,
                                     separatorBuilder: (_, __) =>
-                                        const SizedBox(height: 8),
-                                    itemBuilder: (_, i) {
-                                      final pedido = _pedidos[i];
-                                      final subtitulo = [
-                                        if (pedido.referencia.isNotEmpty)
-                                          pedido.referencia,
-                                        if (pedido.cliente.isNotEmpty)
-                                          'Cliente: ${pedido.cliente}',
-                                        if (pedido.mesero.isNotEmpty)
-                                          'Mesero: ${pedido.mesero}',
-                                      ].join(' · ');
-
-                                      return Card(
-                                        color: AppColors.surface,
-                                        child: Padding(
-                                          padding: const EdgeInsets.all(12),
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Row(
-                                                children: [
-                                                  _TurnoBadge(
-                                                    numeroTurno:
-                                                        pedido.numeroTurno > 0
-                                                            ? pedido.numeroTurno
-                                                            : pedido.id,
-                                                  ),
-                                                  const SizedBox(width: 8),
-                                                  _EstadoTag(
-                                                      estado: pedido.estado),
-                                                  const Spacer(),
-                                                  Text(
-                                                    pedido.tipo == 'domicilio'
-                                                        ? 'Domicilio'
-                                                        : 'Mesa',
-                                                    style: const TextStyle(
-                                                      color:
-                                                          AppColors.textMuted,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                              const SizedBox(height: 6),
-                                              Text(
-                                                '${pedido.itemsCount} item(s) · Subtotal: ${_formatMoney(pedido.subtotal)}',
-                                                style: const TextStyle(
-                                                  color: AppColors.textMuted,
-                                                  fontSize: 12,
-                                                ),
-                                              ),
-                                              if (subtitulo.isNotEmpty) ...[
-                                                const SizedBox(height: 6),
-                                                Text(
-                                                  subtitulo,
-                                                  style: const TextStyle(
-                                                    color: AppColors.textMuted,
-                                                  ),
-                                                ),
-                                              ],
-                                              if (pedido.estado ==
-                                                  'abierto') ...[
-                                                const SizedBox(height: 10),
-                                                Wrap(
-                                                  spacing: 8,
-                                                  children: [
-                                                    OutlinedButton(
-                                                      onPressed: () =>
-                                                          _editarPedidoAbierto(
-                                                              pedido),
-                                                      child: const Text(
-                                                          'Editar datos'),
-                                                    ),
-                                                    OutlinedButton.icon(
-                                                      onPressed: () =>
-                                                          _verTicket(pedido),
-                                                      icon: const Icon(
-                                                          Icons.receipt_long,
-                                                          size: 18),
-                                                      label: const Text(
-                                                          'Ver ticket'),
-                                                    ),
-                                                    OutlinedButton(
-                                                      onPressed: () =>
-                                                          Navigator.push(
-                                                        context,
-                                                        MaterialPageRoute(
-                                                          builder: (_) =>
-                                                              PedidoScreen(
-                                                            pedidoId: pedido.id,
-                                                            titulo: pedido
-                                                                    .referencia
-                                                                    .isNotEmpty
-                                                                ? pedido
-                                                                    .referencia
-                                                                : 'Pedido ${pedido.id}',
-                                                            esDomicilio:
-                                                                pedido.tipo ==
-                                                                    'domicilio',
-                                                          ),
-                                                        ),
-                                                      ).then((_) =>
-                                                              _cargarDatos()),
-                                                      child: const Text(
-                                                          'Agregar productos'),
-                                                    ),
-                                                    ElevatedButton(
-                                                      onPressed: () =>
-                                                          _cerrarPedidoConImpresion(
-                                                              pedido),
-                                                      child:
-                                                          const Text('Cerrar'),
-                                                    ),
-                                                    TextButton(
-                                                      onPressed: () =>
-                                                          _confirmarCancelacion(
-                                                              pedido),
-                                                      child: const Text(
-                                                          'Cancelar'),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ] else if (pedido.estado ==
-                                                  'cerrado') ...[
-                                                const SizedBox(height: 10),
-                                                Wrap(
-                                                  spacing: 8,
-                                                  runSpacing: 8,
-                                                  children: [
-                                                    OutlinedButton.icon(
-                                                      onPressed: () =>
-                                                          _verTicket(pedido),
-                                                      icon: const Icon(
-                                                          Icons.receipt_long,
-                                                          size: 18),
-                                                      label: const Text(
-                                                          'Ver / reimprimir ticket'),
-                                                    ),
-                                                    if (_jornadaSeleccionada
-                                                            ?.estado ==
-                                                        'abierta')
-                                                      ElevatedButton.icon(
-                                                        onPressed: () =>
-                                                            _reabrirPedido(
-                                                                pedido),
-                                                        icon: const Icon(
-                                                            Icons.lock_open,
-                                                            size: 18),
-                                                        label: const Text(
-                                                            'Reabrir pedido'),
-                                                      ),
-                                                  ],
-                                                ),
-                                              ],
-                                            ],
-                                          ),
-                                        ),
-                                      );
-                                    },
+                                        const SizedBox(height: 10),
+                                    itemBuilder: (_, i) =>
+                                        _buildPedidoCard(_pedidos[i]),
                                   ),
                           ),
                         ],
@@ -1279,6 +1646,571 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                   ),
               ],
             ),
+    );
+  }
+
+  Widget _buildPedidoCard(_PedidoResumen pedido) {
+    final tieneProductos = pedido.itemsCount > 0;
+    final subtitulo = [
+      if (pedido.referencia.isNotEmpty) pedido.referencia,
+      if (pedido.cliente.isNotEmpty) 'Cliente: ${pedido.cliente}',
+      if (pedido.mesero.isNotEmpty) 'Mesero: ${pedido.mesero}',
+    ].join(' · ');
+
+    return Card(
+      color: AppColors.surface,
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: tieneProductos
+              ? AppColors.primary.withValues(alpha: 0.18)
+              : AppColors.warning.withValues(alpha: 0.45),
+          width: 1.2,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                _TurnoBadge(
+                  numeroTurno:
+                      pedido.numeroTurno > 0 ? pedido.numeroTurno : pedido.id,
+                ),
+                const SizedBox(width: 8),
+                _EstadoTag(estado: pedido.estado),
+                const SizedBox(width: 8),
+                if (!tieneProductos && pedido.estado == 'abierto')
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.warning.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(100),
+                      border: Border.all(
+                        color: AppColors.warning.withValues(alpha: 0.5),
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.info_outline_rounded,
+                          size: 13,
+                          color: AppColors.warning,
+                        ),
+                        SizedBox(width: 4),
+                        Text(
+                          'Sin productos',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.warning,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                const Spacer(),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: pedido.tipo == 'domicilio'
+                        ? Colors.orange.withValues(alpha: 0.14)
+                        : Colors.blue.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        pedido.tipo == 'domicilio'
+                            ? Icons.delivery_dining_rounded
+                            : Icons.table_restaurant_rounded,
+                        size: 14,
+                        color: pedido.tipo == 'domicilio'
+                            ? Colors.deepOrange
+                            : Colors.blue.shade700,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        pedido.tipo == 'domicilio' ? 'Domicilio' : 'Mesa',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: pedido.tipo == 'domicilio'
+                              ? Colors.deepOrange
+                              : Colors.blue.shade700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            if (subtitulo.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                subtitulo,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13.5,
+                ),
+              ),
+            ],
+            const SizedBox(height: 6),
+            if (tieneProductos) ...[
+              Text(
+                '${pedido.itemsCount} producto(s) · Subtotal: ${_formatMoney(pedido.subtotal)}'
+                '${pedido.tipo == 'domicilio' && pedido.valorDomicilio > 0 ? ' + Domicilio: ${_formatMoney(pedido.valorDomicilio)}' : ''}',
+                style: const TextStyle(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+              if (pedido.resumenItems.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  pedido.resumenItems.join(', '),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ] else
+              const Text(
+                'Este pedido aún no tiene productos cargados. Toca "Añadir productos" para comenzar.',
+                style: TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            if (pedido.estado == 'abierto') ...[
+              const SizedBox(height: 12),
+              // Botón principal y más intuitivo: Añadir productos (siempre protagonista)
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.agregarProductos,
+                    foregroundColor: Colors.white,
+                    elevation: 2,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onPressed: () => _abrirPantallaProductos(pedido),
+                  icon: Icon(
+                    tieneProductos
+                        ? Icons.shopping_cart_checkout_rounded
+                        : Icons.add_shopping_cart_rounded,
+                    size: 20,
+                  ),
+                  label: Text(
+                    tieneProductos
+                        ? 'Añadir / Editar productos (${pedido.itemsCount})'
+                        : 'Añadir productos al pedido',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              // Solo mostrar Comanda Cocina, Ver Ticket y Cerrar si el pedido TIENE productos
+              if (tieneProductos) ...[
+                if (pedido.impresoCocina || pedido.impresoCliente) ...[
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      if (pedido.impresoCocina)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppColors.success.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(100),
+                            border: Border.all(
+                              color: AppColors.success.withValues(alpha: 0.45),
+                            ),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.check_circle_rounded,
+                                size: 13,
+                                color: AppColors.success,
+                              ),
+                              SizedBox(width: 4),
+                              Text(
+                                'Orden cocina: Ya impresa',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.success,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      if (pedido.impresoCliente)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppColors.success.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(100),
+                            border: Border.all(
+                              color: AppColors.success.withValues(alpha: 0.45),
+                            ),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.check_circle_rounded,
+                                size: 13,
+                                color: AppColors.success,
+                              ),
+                              SizedBox(width: 4),
+                              Text(
+                                'Factura cliente: Ya impresa',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.success,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          backgroundColor: pedido.impresoCocina
+                              ? AppColors.comandaCocina.withValues(alpha: 0.10)
+                              : null,
+                          foregroundColor: AppColors.comandaCocina,
+                          side: const BorderSide(color: AppColors.comandaCocina),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 9),
+                        ),
+                        onPressed: () => _imprimirComandaCocina(pedido),
+                        icon: Icon(
+                          pedido.impresoCocina
+                              ? Icons.check_circle_rounded
+                              : Icons.soup_kitchen_rounded,
+                          size: 17,
+                        ),
+                        label: Text(
+                          pedido.impresoCocina
+                              ? 'Cocina (Ya impresa)'
+                              : 'Comanda cocina',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 12.5, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          backgroundColor: pedido.impresoCliente
+                              ? AppColors.verTicket.withValues(alpha: 0.10)
+                              : null,
+                          foregroundColor: AppColors.verTicket,
+                          side: const BorderSide(color: AppColors.verTicket),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 9),
+                        ),
+                        onPressed: () => _verTicket(pedido),
+                        icon: Icon(
+                          pedido.impresoCliente
+                              ? Icons.check_circle_rounded
+                              : Icons.receipt_long_rounded,
+                          size: 17,
+                        ),
+                        label: Text(
+                          pedido.impresoCliente
+                              ? 'Ticket (Ya impreso)'
+                              : 'Ver ticket',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 12.5, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.cobrarCerrar,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 9),
+                        ),
+                        onPressed: () => _cerrarPedidoConImpresion(pedido),
+                        icon:
+                            const Icon(Icons.point_of_sale_rounded, size: 17),
+                        label: const Text(
+                          'Cobrar / Cerrar',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12.5, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.editarDatos,
+                          side: const BorderSide(color: AppColors.editarDatos),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 9),
+                        ),
+                        onPressed: () => _editarPedidoAbierto(pedido),
+                        icon: const Icon(Icons.edit_note_rounded, size: 17),
+                        label: const Text(
+                          'Datos',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.error,
+                          side: const BorderSide(color: AppColors.error),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 9),
+                        ),
+                        onPressed: () => _confirmarCancelacion(pedido),
+                        icon: const Icon(Icons.cancel_outlined, size: 16),
+                        label: const Text(
+                          'Cancelar',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ] else ...[
+                // Cuando NO hay productos: solo permitir Editar datos del pedido o Cancelar
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.editarDatos,
+                          side: const BorderSide(color: AppColors.editarDatos),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 9),
+                        ),
+                        onPressed: () => _editarPedidoAbierto(pedido),
+                        icon: const Icon(Icons.edit_note_rounded, size: 18),
+                        label: const Text(
+                          'Editar datos',
+                          style: TextStyle(
+                              fontSize: 12.5, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.error,
+                          side: const BorderSide(color: AppColors.error),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 9),
+                        ),
+                        onPressed: () => _confirmarCancelacion(pedido),
+                        icon: const Icon(Icons.cancel_outlined, size: 18),
+                        label: const Text(
+                          'Cancelar pedido',
+                          style: TextStyle(
+                              fontSize: 12.5, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ] else if (pedido.estado == 'cerrado') ...[
+              const SizedBox(height: 10),
+              if (pedido.impresoCocina || pedido.impresoCliente) ...[
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    if (pedido.impresoCocina)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.success.withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(100),
+                          border: Border.all(
+                            color: AppColors.success.withValues(alpha: 0.45),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.check_circle_rounded,
+                              size: 13,
+                              color: AppColors.success,
+                            ),
+                            SizedBox(width: 4),
+                            Text(
+                              'Orden cocina: Ya impresa',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.success,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (pedido.impresoCliente)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.success.withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(100),
+                          border: Border.all(
+                            color: AppColors.success.withValues(alpha: 0.45),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.check_circle_rounded,
+                              size: 13,
+                              color: AppColors.success,
+                            ),
+                            SizedBox(width: 4),
+                            Text(
+                              'Factura cliente: Ya impresa',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.success,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (tieneProductos) ...[
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        backgroundColor: pedido.impresoCocina
+                            ? AppColors.comandaCocina.withValues(alpha: 0.10)
+                            : null,
+                        foregroundColor: AppColors.comandaCocina,
+                        side: const BorderSide(color: AppColors.comandaCocina),
+                      ),
+                      onPressed: () => _imprimirComandaCocina(pedido),
+                      icon: Icon(
+                        pedido.impresoCocina
+                            ? Icons.check_circle_rounded
+                            : Icons.soup_kitchen_rounded,
+                        size: 18,
+                      ),
+                      label: Text(
+                        pedido.impresoCocina
+                            ? 'Cocina (Ya impresa)'
+                            : 'Comanda cocina',
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        backgroundColor: pedido.impresoCliente
+                            ? AppColors.verTicket.withValues(alpha: 0.10)
+                            : null,
+                        foregroundColor: AppColors.verTicket,
+                        side: const BorderSide(color: AppColors.verTicket),
+                      ),
+                      onPressed: () => _verTicket(pedido),
+                      icon: Icon(
+                        pedido.impresoCliente
+                            ? Icons.check_circle_rounded
+                            : Icons.receipt_long_rounded,
+                        size: 18,
+                      ),
+                      label: Text(
+                        pedido.impresoCliente
+                            ? 'Ticket (Ya impreso)'
+                            : 'Ver / reimprimir ticket',
+                      ),
+                    ),
+                  ],
+                  if (_jornadaSeleccionada?.estado == 'abierta')
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () => _reabrirPedido(pedido),
+                      icon: const Icon(Icons.lock_open_rounded, size: 18),
+                      label: const Text('Reabrir pedido'),
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
@@ -1324,33 +2256,44 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
         children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Wrap(
-              spacing: 8,
-              children: [
-                _FiltroChip(
+          Row(
+            children: [
+              Expanded(
+                child: _FiltroChip(
                   label: 'Todo',
+                  icon: Icons.all_inclusive_rounded,
                   selected: _rangoCerradas == 'todo',
                   onTap: () => setState(() => _rangoCerradas = 'todo'),
                 ),
-                _FiltroChip(
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _FiltroChip(
                   label: 'Hoy',
+                  icon: Icons.today_rounded,
                   selected: _rangoCerradas == 'hoy',
                   onTap: () => setState(() => _rangoCerradas = 'hoy'),
                 ),
-                _FiltroChip(
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _FiltroChip(
                   label: 'Semana',
+                  icon: Icons.date_range_rounded,
                   selected: _rangoCerradas == 'semana',
                   onTap: () => setState(() => _rangoCerradas = 'semana'),
                 ),
-                _FiltroChip(
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _FiltroChip(
                   label: 'Mes',
+                  icon: Icons.calendar_month_rounded,
                   selected: _rangoCerradas == 'mes',
                   onTap: () => setState(() => _rangoCerradas = 'mes'),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           Row(
@@ -1616,6 +2559,9 @@ class _PedidoResumen {
   final double subtotal;
   final double valorDomicilio;
   final int numeroTurno;
+  final bool impresoCliente;
+  final bool impresoCocina;
+  final List<String> resumenItems;
 
   const _PedidoResumen({
     required this.id,
@@ -1628,11 +2574,80 @@ class _PedidoResumen {
     required this.subtotal,
     this.valorDomicilio = 0,
     this.numeroTurno = 0,
+    this.impresoCliente = false,
+    this.impresoCocina = false,
+    this.resumenItems = const [],
   });
+}
+
+/// Botón de filtro que se reparte equitativamente en la pantalla con ícono,
+/// color representativo y contador.
+class _BotonEstadoFiltro extends StatelessWidget {
+  final String label;
+  final int count;
+  final IconData icon;
+  final Color color;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _BotonEstadoFiltro({
+    required this.label,
+    required this.count,
+    required this.icon,
+    required this.color,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? color : AppColors.surface,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? color : color.withValues(alpha: 0.35),
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 16,
+                color: selected ? Colors.white : color,
+              ),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  '$label ($count)',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: selected ? Colors.white : AppColors.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _FiltroChip extends StatelessWidget {
   final String label;
+  final IconData? icon;
   final bool selected;
   final VoidCallback onTap;
 
@@ -1640,20 +2655,47 @@ class _FiltroChip extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    this.icon,
   });
 
   @override
   Widget build(BuildContext context) {
-    return ChoiceChip(
-      label: Text(label),
-      selected: selected,
-      onSelected: (_) => onTap(),
-      selectedColor: AppColors.accent,
-      labelStyle: TextStyle(
-        color: selected ? Colors.white : AppColors.textPrimary,
+    return Material(
+      color: selected ? AppColors.accent : AppColors.surface,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+          alignment: Alignment.center,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (icon != null) ...[
+                Icon(
+                  icon,
+                  size: 15,
+                  color: selected ? Colors.white : AppColors.primary,
+                ),
+                const SizedBox(width: 4),
+              ],
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: selected ? Colors.white : AppColors.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
-      backgroundColor: AppColors.surface,
-      side: BorderSide.none,
     );
   }
 }

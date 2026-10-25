@@ -49,8 +49,12 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
 
         // Arrancar y enlazar el servicio en primer plano
-        startPrinterService()
-        bindPrinterService()
+        try {
+            startPrinterService()
+            bindPrinterService()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error iniciando servicio de impresora: ${e.message}", e)
+        }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -84,18 +88,27 @@ class MainActivity : FlutterActivity() {
     // ──────────────────────────────────────────────────────────────────────
 
     private fun startPrinterService() {
-        val intent = Intent(this, PrinterForegroundService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+            val intent = Intent(this, PrinterForegroundService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Log.d(TAG, "PrinterForegroundService iniciado")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error iniciando PrinterForegroundService: ${e.message}", e)
+            bindPrinterService()
         }
-        Log.d(TAG, "PrinterForegroundService iniciado")
     }
 
     private fun bindPrinterService() {
-        val intent = Intent(this, PrinterForegroundService::class.java)
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        try {
+            val intent = Intent(this, PrinterForegroundService::class.java)
+            bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error en bindPrinterService: ${e.message}", e)
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────

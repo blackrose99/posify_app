@@ -51,7 +51,8 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
     return row?.valor ?? fallback;
   }
 
-  final BluetoothPrinterService _printerService = const BluetoothPrinterService();
+  final BluetoothPrinterService _printerService =
+      const BluetoothPrinterService();
 
   Future<bool> _imprimirDirectoBluetooth(String contenido) async {
     final deviceId = await _leerConfig('printer_device_id');
@@ -152,6 +153,25 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
   }
 
   Future<void> _verTicket(_PedidoHistorial pedido) async {
+    if (pedido.itemsCount <= 0) {
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Sin productos en el pedido'),
+          content: const Text(
+              'Este pedido no tiene productos registrados para mostrar en el ticket.'),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Entendido'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     final itemsRows = await (_db.select(_db.itemsPedido)
           ..where((i) => i.pedidoId.equals(pedido.id)))
         .get();
@@ -168,7 +188,9 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
             adicionales: () {
               try {
                 final decoded = jsonDecode(row.adicionales);
-                if (decoded is List) return decoded.map((e) => e.toString()).toList();
+                if (decoded is List) {
+                  return decoded.map((e) => e.toString()).toList();
+                }
               } catch (_) {}
               return <String>[];
             }(),
@@ -177,7 +199,8 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
         )
         .toList();
 
-    final nombreNegocio = await _leerConfig('nombre_negocio', fallback: 'POSify');
+    final nombreNegocio =
+        await _leerConfig('nombre_negocio', fallback: 'POSify');
 
     final data = TicketData(
       nombreNegocio: nombreNegocio,
@@ -543,7 +566,8 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                   children: [
                     Icon(Icons.delete_outline, color: AppColors.error, size: 20),
                     SizedBox(width: 8),
-                    Text('Eliminar jornada', style: TextStyle(color: AppColors.error)),
+                    Text('Eliminar jornada',
+                        style: TextStyle(color: AppColors.error)),
                   ],
                 ),
               ),
@@ -621,26 +645,39 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                         onChanged: (value) => setState(() => _query = value),
                       ),
                       const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 8,
+                      Row(
                         children: [
-                          _EstadoFilter(
-                            label: 'Todos',
-                            active: _filtroEstado == 'todos',
-                            onTap: () =>
-                                setState(() => _filtroEstado = 'todos'),
+                          Expanded(
+                            child: _EstadoFilter(
+                              label: 'Todos (${_resumen.totalPedidos})',
+                              icon: Icons.list_alt_rounded,
+                              color: AppColors.primary,
+                              active: _filtroEstado == 'todos',
+                              onTap: () =>
+                                  setState(() => _filtroEstado = 'todos'),
+                            ),
                           ),
-                          _EstadoFilter(
-                            label: 'Cerrados',
-                            active: _filtroEstado == 'cerrado',
-                            onTap: () =>
-                                setState(() => _filtroEstado = 'cerrado'),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _EstadoFilter(
+                              label: 'Cerrados (${_resumen.totalCerrados})',
+                              icon: Icons.check_circle_outline_rounded,
+                              color: AppColors.success,
+                              active: _filtroEstado == 'cerrado',
+                              onTap: () =>
+                                  setState(() => _filtroEstado = 'cerrado'),
+                            ),
                           ),
-                          _EstadoFilter(
-                            label: 'Cancelados',
-                            active: _filtroEstado == 'cancelado',
-                            onTap: () =>
-                                setState(() => _filtroEstado = 'cancelado'),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _EstadoFilter(
+                              label: 'Cancelados (${_resumen.totalCancelados})',
+                              icon: Icons.cancel_outlined,
+                              color: AppColors.error,
+                              active: _filtroEstado == 'cancelado',
+                              onTap: () =>
+                                  setState(() => _filtroEstado = 'cancelado'),
+                            ),
                           ),
                         ],
                       ),
@@ -677,7 +714,10 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                                                 BorderRadius.circular(100),
                                           ),
                                           child: Text(
-                                            codigoTurnoDesde(p.numeroTurno > 0 ? p.numeroTurno : p.id),
+                                            codigoTurnoDesde(
+                                                p.numeroTurno > 0
+                                                    ? p.numeroTurno
+                                                    : p.id),
                                             style: const TextStyle(
                                               color: Colors.white,
                                               fontSize: 12,
@@ -730,11 +770,18 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                                         ),
                                       ),
                                     ],
-                                    if (p.estado != 'abierto') ...[
+                                    if (p.estado != 'abierto' &&
+                                        p.itemsCount > 0) ...[
                                       const SizedBox(height: 8),
                                       Align(
                                         alignment: Alignment.centerLeft,
                                         child: OutlinedButton.icon(
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor:
+                                                AppColors.verTicket,
+                                            side: const BorderSide(
+                                                color: AppColors.verTicket),
+                                          ),
                                           onPressed: () => _verTicket(p),
                                           icon: const Icon(Icons.receipt_long,
                                               size: 18),
@@ -837,7 +884,8 @@ class _ResumenCard extends StatelessWidget {
               alignment: Alignment.centerLeft,
               child: Text(
                 _formatMoney(value),
-                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17),
+                style:
+                    const TextStyle(fontWeight: FontWeight.w700, fontSize: 17),
               ),
             ),
           ],
@@ -869,27 +917,61 @@ class _ResumenMeta extends StatelessWidget {
 
 class _EstadoFilter extends StatelessWidget {
   final String label;
+  final IconData icon;
+  final Color color;
   final bool active;
   final VoidCallback onTap;
 
   const _EstadoFilter({
     required this.label,
+    required this.icon,
+    required this.color,
     required this.active,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return ChoiceChip(
-      label: Text(label),
-      selected: active,
-      onSelected: (_) => onTap(),
-      selectedColor: AppColors.accent,
-      labelStyle: TextStyle(
-        color: active ? Colors.white : AppColors.textPrimary,
+    return Material(
+      color: active ? color : AppColors.surface,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: active ? color : color.withValues(alpha: 0.35),
+              width: active ? 1.5 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 16,
+                color: active ? Colors.white : color,
+              ),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: active ? Colors.white : AppColors.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
-      side: BorderSide.none,
-      backgroundColor: AppColors.surface,
     );
   }
 }

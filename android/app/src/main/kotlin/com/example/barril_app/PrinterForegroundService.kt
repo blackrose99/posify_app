@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -65,9 +66,22 @@ class PrinterForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Impresora lista para imprimir"))
+        try {
+            val notification = buildNotification("Impresora lista para imprimir")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            Log.i(TAG, "PrinterForegroundService creado y en primer plano")
+        } catch (e: Exception) {
+            Log.e(TAG, "No se pudo iniciar startForeground con connectedDevice: ${e.message}", e)
+        }
         startWorker()
-        Log.i(TAG, "PrinterForegroundService creado y en primer plano")
     }
 
     override fun onBind(intent: Intent?): IBinder = binder

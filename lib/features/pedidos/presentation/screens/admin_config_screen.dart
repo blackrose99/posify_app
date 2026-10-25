@@ -74,7 +74,7 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Costo de envio a domicilio'),
+        title: const Text('Costo de envío a domicilio'),
         content: TextField(
           controller: ctrl,
           keyboardType: TextInputType.number,
@@ -99,13 +99,25 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
     if (valor == null || valor < 0) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ingresa un valor valido.')),
+        const SnackBar(content: Text('Ingresa un valor válido.')),
       );
       return;
     }
 
     await _upsertConfig('valor_domicilio', valor.toStringAsFixed(0));
     await _cargar();
+  }
+
+  Future<void> _cargarDatosPrueba() async {
+    await _db.asegurarDatosInicialesDePrueba(forzar: true);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Datos iniciales de prueba (productos, categorías, meseros y etiquetas) cargados correctamente.',
+        ),
+      ),
+    );
   }
 
   Future<void> _exportarRespaldo() async {
@@ -141,7 +153,7 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Restaurar respaldo'),
         content: const Text(
-          'Esto reemplazara los datos actuales por los del archivo seleccionado. Continua solo si ya tienes una copia reciente.',
+          'Esto reemplazará los datos actuales por los del archivo seleccionado. Continúa solo si ya tienes una copia reciente.',
         ),
         actions: [
           TextButton(
@@ -195,7 +207,7 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
         backgroundColor: AppColors.primary,
         iconTheme: const IconThemeData(color: Colors.white),
         title: const Text(
-          'Configuracion administrativa',
+          'Configuración administrativa',
           style: TextStyle(color: Colors.white),
         ),
       ),
@@ -209,7 +221,7 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
                 Card(
                   child: ListTile(
                     leading: const Icon(Icons.delivery_dining_outlined),
-                    title: const Text('Costo de envio a domicilio'),
+                    title: const Text('Costo de envío a domicilio'),
                     subtitle: Text(
                         formatMoney(double.tryParse(_valorDomicilio) ?? 0)),
                     trailing: const Icon(Icons.edit_outlined),
@@ -220,9 +232,9 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
                 Card(
                   child: ListTile(
                     leading: const Icon(Icons.backup_outlined),
-                    title: const Text('Respaldo y sincronizacion'),
+                    title: const Text('Respaldo y sincronización'),
                     subtitle: const Text(
-                        'Exporta la base completa y restaurala en otro telefono'),
+                        'Exporta la base completa y restáurala en otro teléfono'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: _backupRunning
                         ? null
@@ -246,7 +258,7 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
                                       ),
                                       const SizedBox(height: 8),
                                       const Text(
-                                        'El archivo JSON incluye configuracion, categorias, productos, mesas, pedidos, facturas y adicionales. Puedes guardarlo en Drive o en una carpeta del telefono.',
+                                        'El archivo JSON incluye configuración, categorías, productos, mesas, pedidos, facturas y adicionales. Puedes guardarlo en Drive o en una carpeta del teléfono.',
                                       ),
                                       const SizedBox(height: 16),
                                       FilledButton.icon(
@@ -272,7 +284,7 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
                 Card(
                   child: ListTile(
                     leading: const Icon(Icons.category_outlined),
-                    title: const Text('Administrar categorias'),
+                    title: const Text('Administrar categorías'),
                     subtitle: const Text('Crear, editar, eliminar y etiquetas'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => Navigator.push(
@@ -327,6 +339,21 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
                         builder: (_) => const ConfigMeserosScreen(),
                       ),
                     ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(
+                      Icons.science_outlined,
+                      color: AppColors.nuevoPedido,
+                    ),
+                    title: const Text('Cargar datos iniciales de prueba'),
+                    subtitle: const Text(
+                      'Asegura al menos 10 productos de prueba, categorías, meseros y etiquetas',
+                    ),
+                    trailing: const Icon(Icons.playlist_add_check_rounded),
+                    onTap: _cargarDatosPrueba,
                   ),
                 ),
               ],

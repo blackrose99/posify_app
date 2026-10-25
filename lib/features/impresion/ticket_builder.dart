@@ -367,7 +367,7 @@ List<int> buildStandardEscPosBytes(
 
   // 5. Productos
   if (data.items.isEmpty) {
-    bytes.addAll(latin1.encode(_centrar('Sin productos agregados', w) + '\n'));
+    bytes.addAll(latin1.encode('${_centrar('Sin productos agregados', w)}\n'));
   } else {
     for (final item in data.items) {
       bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
@@ -380,20 +380,20 @@ List<int> buildStandardEscPosBytes(
         bytes.addAll(latin1.encode('  Nota: ${item.nota.trim()}\n'));
       }
       bytes.addAll(latin1.encode(
-        _dosColumnas('  ${formatMoney(item.precio)} c/u', formatMoney(item.subtotal), w) + '\n',
+        '${_dosColumnas('  ${formatMoney(item.precio)} c/u', formatMoney(item.subtotal), w)}\n',
       ));
     }
   }
 
   // 6. Totales
   bytes.addAll(latin1.encode('${'-' * w}\n'));
-  bytes.addAll(latin1.encode(_dosColumnas('Subtotal', formatMoney(data.subtotal), w) + '\n'));
+  bytes.addAll(latin1.encode('${_dosColumnas('Subtotal', formatMoney(data.subtotal), w)}\n'));
   if (data.domicilioCobrado > 0) {
-    bytes.addAll(latin1.encode(_dosColumnas('Domicilio', formatMoney(data.domicilioCobrado), w) + '\n'));
+    bytes.addAll(latin1.encode('${_dosColumnas('Domicilio', formatMoney(data.domicilioCobrado), w)}\n'));
   }
   bytes.addAll(latin1.encode('${'=' * w}\n'));
   bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
-  bytes.addAll(latin1.encode(_dosColumnas('TOTAL', formatMoney(data.total), w) + '\n'));
+  bytes.addAll(latin1.encode('${_dosColumnas('TOTAL', formatMoney(data.total), w)}\n'));
   bytes.addAll([0x1B, 0x45, 0x00]); // Normal
   bytes.addAll(latin1.encode('${'=' * w}\n'));
 
@@ -409,6 +409,233 @@ List<int> buildStandardEscPosBytes(
   ]);
 
   return bytes;
+}
+
+/// Texto plano de la comanda de cocina, optimizada para el cocinero/despacho:
+/// código de turno grande, casillas [ ] para checklist de platos, notas y adicionales,
+/// sin precios de venta ni datos fiscales que estorben al cocinero.
+String buildPlainCocinaTicket(TicketData data, {AnchoPapel ancho = AnchoPapel.mm58}) {
+  final w = ancho.caracteresPorLinea;
+  final buffer = StringBuffer();
+
+  // Holgura inicial
+  buffer.writeln();
+  buffer.writeln();
+  buffer.writeln();
+  buffer.writeln();
+  buffer.writeln(_centrar('*** ORDEN DE COCINA ***', w));
+  buffer.writeln(_linea(w, '='));
+  buffer.writeln(_centrar(data.codigoTurno, w));
+  buffer.writeln(_linea(w, '='));
+  buffer.writeln('${data.esDomicilio ? 'Domicilio' : 'Mesa'}: ${data.referenciaONombreTipo}');
+  if (data.cliente.trim().isNotEmpty) buffer.writeln('Cliente: ${data.cliente.trim()}');
+  if (data.mesero.trim().isNotEmpty) buffer.writeln('Mesero: ${data.mesero.trim()}');
+  buffer.writeln('Hora: ${formatFechaTicket(data.fecha)}');
+  buffer.writeln(_linea(w));
+
+  if (data.items.isEmpty) {
+    buffer.writeln(_centrar('Sin productos agregados', w));
+  } else {
+    for (final item in data.items) {
+      buffer.writeln('[ ] ${item.cantidad}x ${item.nombreProducto}');
+      if (item.adicionales.isNotEmpty) {
+        buffer.writeln('    + ${item.adicionales.join(', ')}');
+      }
+      if (item.nota.trim().isNotEmpty) {
+        buffer.writeln('    * NOTA: ${item.nota.trim()}');
+      }
+      buffer.writeln();
+    }
+  }
+
+  buffer.writeln(_linea(w, '='));
+  buffer.writeln('Platos/Items a despachar: ${data.totalCantidadItems}');
+  buffer.writeln(_centrar('*** CONTROL DE DESPACHO ***', w));
+  // Holgura final para corte limpio
+  buffer.writeln();
+  buffer.writeln();
+  buffer.writeln();
+  buffer.writeln();
+  buffer.writeln();
+  buffer.writeln();
+  buffer.writeln();
+  buffer.writeln();
+
+  return buffer.toString();
+}
+
+/// Genera bytes ESC/POS en formato texto estándar para la COMANDA DE COCINA.
+/// Incluye casillas [ ] de checklist para cada plato, código de turno destacado
+/// y notas especiales de preparación.
+List<int> buildStandardEscPosCocinaBytes(
+  TicketData data, {
+  AnchoPapel ancho = AnchoPapel.mm58,
+}) {
+  final bytes = <int>[];
+  final w = ancho.caracteresPorLinea;
+
+  // 1. Reset / Inicialización
+  bytes.addAll([0x1B, 0x40]);
+
+  // 2. Holgura inicial de al menos 1 cm
+  bytes.addAll([0x1B, 0x64, 0x04]);
+
+  // 3. Encabezado centrado de cocina
+  bytes.addAll([0x1B, 0x61, 0x01]); // Centrado
+  bytes.addAll([0x1D, 0x21, 0x11]); // Doble alto y doble ancho
+  bytes.addAll(latin1.encode('ORDEN DE COCINA\n'));
+  bytes.addAll([0x1D, 0x21, 0x00]); // Normal
+  bytes.addAll(latin1.encode('${'=' * w}\n'));
+
+  // Código de turno destacado gigante
+  bytes.addAll([0x1D, 0x21, 0x11]); // Doble tamaño
+  bytes.addAll(latin1.encode('${data.codigoTurno}\n'));
+  bytes.addAll([0x1D, 0x21, 0x00]); // Normal
+  bytes.addAll(latin1.encode('${'=' * w}\n'));
+
+  // 4. Datos del pedido
+  bytes.addAll([0x1B, 0x61, 0x00]); // Alineación a la izquierda
+  final tipoStr = data.esDomicilio ? 'Domicilio' : 'Mesa';
+  bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
+  bytes.addAll(latin1.encode('$tipoStr: ${data.referenciaONombreTipo}\n'));
+  bytes.addAll([0x1B, 0x45, 0x00]); // Normal
+  if (data.cliente.trim().isNotEmpty) {
+    bytes.addAll(latin1.encode('Cliente: ${data.cliente.trim()}\n'));
+  }
+  if (data.mesero.trim().isNotEmpty) {
+    bytes.addAll(latin1.encode('Mesero: ${data.mesero.trim()}\n'));
+  }
+  bytes.addAll(latin1.encode('Hora: ${formatFechaTicket(data.fecha)}\n'));
+  bytes.addAll(latin1.encode('${'-' * w}\n'));
+
+  // 5. Productos tipo checklist de cocina
+  if (data.items.isEmpty) {
+    bytes.addAll(latin1.encode('${_centrar('Sin productos agregados', w)}\n'));
+  } else {
+    for (final item in data.items) {
+      bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
+      bytes.addAll(latin1.encode('[ ] ${item.cantidad}x ${item.nombreProducto}\n'));
+      bytes.addAll([0x1B, 0x45, 0x00]); // Normal
+      if (item.adicionales.isNotEmpty) {
+        bytes.addAll(latin1.encode('    + ${item.adicionales.join(', ')}\n'));
+      }
+      if (item.nota.trim().isNotEmpty) {
+        bytes.addAll([0x1B, 0x45, 0x01]);
+        bytes.addAll(latin1.encode('    * NOTA: ${item.nota.trim()}\n'));
+        bytes.addAll([0x1B, 0x45, 0x00]);
+      }
+      bytes.addAll(latin1.encode('\n'));
+    }
+  }
+
+  // 6. Resumen de despacho
+  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll([0x1B, 0x45, 0x01]);
+  bytes.addAll(latin1.encode('Platos/Items a despachar: ${data.totalCantidadItems}\n'));
+  bytes.addAll([0x1B, 0x45, 0x00]);
+  bytes.addAll([0x1B, 0x61, 0x01]); // Centrado
+  bytes.addAll(latin1.encode('*** CONTROL DE DESPACHO ***\n'));
+
+  // 7. Holgura final y corte seguro (8 líneas)
+  bytes.addAll([0x1B, 0x64, 0x08]);
+
+  return bytes;
+}
+
+/// Genera un mapa de bits (raster) de comanda de cocina para impresoras Phomemo M220 / térmicas gráficas.
+Future<List<int>> buildRasterCocinaBytes(
+  TicketData data, {
+  AnchoPapel ancho = AnchoPapel.mm58,
+}) async {
+  final width = ancho == AnchoPapel.mm58 ? 384 : 576;
+  final printableWidth = width - 20;
+
+  final itemsList = <_TicketLineItem>[];
+
+  // Encabezado
+  itemsList.add(_TicketLineItem.text('ORDEN DE COCINA', font: img.arial24, isBold: true, align: _TextAlign.center));
+  itemsList.add(_TicketLineItem.divider());
+  itemsList.add(_TicketLineItem.text(data.codigoTurno, font: img.arial24, isBold: true, align: _TextAlign.center));
+  itemsList.add(_TicketLineItem.divider());
+
+  // Detalles
+  itemsList.add(_TicketLineItem.text('${data.esDomicilio ? 'Domicilio' : 'Mesa'}: ${data.referenciaONombreTipo}', font: img.arial24, isBold: true));
+  if (data.cliente.trim().isNotEmpty) {
+    itemsList.add(_TicketLineItem.text('Cliente: ${data.cliente.trim()}', font: img.arial14));
+  }
+  if (data.mesero.trim().isNotEmpty) {
+    itemsList.add(_TicketLineItem.text('Mesero: ${data.mesero.trim()}', font: img.arial14));
+  }
+  itemsList.add(_TicketLineItem.text('Hora: ${formatFechaTicket(data.fecha)}', font: img.arial14));
+  itemsList.add(_TicketLineItem.divider());
+
+  // Productos
+  if (data.items.isEmpty) {
+    itemsList.add(_TicketLineItem.text('Sin productos agregados', font: img.arial14, align: _TextAlign.center));
+  } else {
+    for (final item in data.items) {
+      itemsList.add(_TicketLineItem.text('[ ] ${item.cantidad}x ${item.nombreProducto}', font: img.arial24, isBold: true));
+      if (item.adicionales.isNotEmpty) {
+        itemsList.add(_TicketLineItem.text('    + ${item.adicionales.join(', ')}', font: img.arial14));
+      }
+      if (item.nota.trim().isNotEmpty) {
+        itemsList.add(_TicketLineItem.text('    * NOTA: ${item.nota.trim()}', font: img.arial14, isBold: true));
+      }
+    }
+  }
+
+  itemsList.add(_TicketLineItem.divider());
+  itemsList.add(_TicketLineItem.text('Platos a despachar: ${data.totalCantidadItems}', font: img.arial14, isBold: true, align: _TextAlign.center));
+  itemsList.add(_TicketLineItem.text('*** CONTROL DE DESPACHO ***', font: img.arial14, align: _TextAlign.center));
+
+  const int marginYTop = 80;
+  const int marginYBottom = 80;
+
+  int totalHeight = marginYTop + marginYBottom;
+  for (final item in itemsList) {
+    totalHeight += item.height;
+  }
+
+  final image = img.Image(width: width, height: totalHeight);
+  img.fill(image, color: img.ColorRgb8(255, 255, 255));
+
+  int currentY = marginYTop;
+  for (final item in itemsList) {
+    item.render(image, currentY, width, printableWidth);
+    currentY += item.height;
+  }
+
+  final profile = await CapabilityProfile.load();
+  final generator = Generator(_paperSizeDe(ancho), profile);
+  final bytes = <int>[];
+
+  bytes.addAll([
+    0x1B, 0x40,
+    0x1F, 0x11, 0x0B,
+    0x1B, 0x33, 0x00,
+  ]);
+
+  final rasterBytes = generator.imageRaster(image);
+  bytes.addAll(rasterBytes);
+
+  bytes.addAll([
+    0x1B, 0x4A, 220,
+    0x1B, 0x64, 0x02,
+  ]);
+
+  return bytes;
+}
+
+/// Genera los bytes ESC/POS listos para enviar a la impresora para la COMANDA DE COCINA.
+Future<List<int>> buildEscPosCocinaBytes(
+  TicketData data, {
+  AnchoPapel ancho = AnchoPapel.mm58,
+  bool usarRaster = false,
+}) async {
+  if (usarRaster) {
+    return buildRasterCocinaBytes(data, ancho: ancho);
+  }
+  return buildStandardEscPosCocinaBytes(data, ancho: ancho);
 }
 
 /// Genera un ticket especial de calibración y sincronización de impresora.

@@ -29,6 +29,9 @@ class TicketData {
   final bool cobrarDomicilio;
   final String estadoPedido; // abierto | cerrado | cancelado
   final DateTime fecha;
+  final bool entregado;
+  final bool impresoCliente;
+  final bool impresoCocina;
 
   const TicketData({
     required this.nombreNegocio,
@@ -43,6 +46,9 @@ class TicketData {
     required this.cobrarDomicilio,
     required this.estadoPedido,
     required this.fecha,
+    this.entregado = false,
+    this.impresoCliente = false,
+    this.impresoCocina = false,
   });
 
   bool get esDomicilio => tipo == 'domicilio';
@@ -53,7 +59,45 @@ class TicketData {
 
   double get total => subtotal + domicilioCobrado;
 
+  int get totalCantidadItems => items.fold(0, (s, i) => s + i.cantidad);
+
   String get codigoTurno => codigoTurnoDesde(numeroTurno);
+
+  TicketData copyWith({
+    String? nombreNegocio,
+    int? pedidoId,
+    int? numeroTurno,
+    String? tipo,
+    String? referencia,
+    String? cliente,
+    String? mesero,
+    List<ItemPedido>? items,
+    double? valorDomicilio,
+    bool? cobrarDomicilio,
+    String? estadoPedido,
+    DateTime? fecha,
+    bool? entregado,
+    bool? impresoCliente,
+    bool? impresoCocina,
+  }) {
+    return TicketData(
+      nombreNegocio: nombreNegocio ?? this.nombreNegocio,
+      pedidoId: pedidoId ?? this.pedidoId,
+      numeroTurno: numeroTurno ?? this.numeroTurno,
+      tipo: tipo ?? this.tipo,
+      referencia: referencia ?? this.referencia,
+      cliente: cliente ?? this.cliente,
+      mesero: mesero ?? this.mesero,
+      items: items ?? this.items,
+      valorDomicilio: valorDomicilio ?? this.valorDomicilio,
+      cobrarDomicilio: cobrarDomicilio ?? this.cobrarDomicilio,
+      estadoPedido: estadoPedido ?? this.estadoPedido,
+      fecha: fecha ?? this.fecha,
+      entregado: entregado ?? this.entregado,
+      impresoCliente: impresoCliente ?? this.impresoCliente,
+      impresoCocina: impresoCocina ?? this.impresoCocina,
+    );
+  }
 
   String get tituloEstado {
     switch (estadoPedido) {
@@ -61,9 +105,8 @@ class TicketData {
         return 'PEDIDO CANCELADO';
       case 'cerrado':
       case 'pagado':
-        return 'FACTURA';
       default:
-        return 'PEDIDO EN PREPARACIÓN';
+        return 'FACTURA DE VENTA';
     }
   }
 
