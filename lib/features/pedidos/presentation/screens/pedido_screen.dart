@@ -4,6 +4,7 @@ import 'package:drift/drift.dart' show OrderingTerm, Value, Variable;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/constants/app_colors.dart';
+import '../../../../core/services/medios_pago_service.dart';
 import '../../../../core/utils/money_formatter.dart';
 import '../../../../database/app_database.dart' as dbi;
 import '../../../../injection_container.dart';
@@ -15,6 +16,7 @@ import '../../../productos/presentation/providers/productos_provider.dart';
 import '../../domain/entities/item_pedido.dart';
 import '../widgets/adicionales_chips.dart';
 import '../widgets/cantidad_selector.dart';
+import '../widgets/dialogo_cobrar_pedido.dart';
 import 'ticket_preview_screen.dart';
 
 const double _anchoBreakpointEscritorio = 900;
@@ -319,13 +321,20 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
     return row?.valor ?? fallback;
   }
 
-  Future<void> _actualizarEstadoPedido(String estado) async {
+  Future<void> _actualizarEstadoPedido(String estado, {String medioPago = ''}) async {
     if (_pedidoId == null) return;
     final cerradoEn = estado == 'abierto' ? null : _nowEpochMs();
-    await _db.customStatement(
-      'UPDATE pedidos SET estado = ?, cerrado_en = ? WHERE id = ?',
-      [estado, cerradoEn, _pedidoId!],
-    );
+    if (medioPago.isNotEmpty) {
+      await _db.customStatement(
+        'UPDATE pedidos SET estado = ?, cerrado_en = ?, medio_pago = ? WHERE id = ?',
+        [estado, cerradoEn, medioPago, _pedidoId!],
+      );
+    } else {
+      await _db.customStatement(
+        'UPDATE pedidos SET estado = ?, cerrado_en = ? WHERE id = ?',
+        [estado, cerradoEn, _pedidoId!],
+      );
+    }
     setState(() => _estadoPedido = estado);
   }
 
@@ -500,9 +509,26 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
     }
   }
 
-  Future<TicketData> _construirTicketData({required String estado}) async {
+  Future<TicketData> _construirTicketData({
+    required String estado,
+    String? medioPago,
+    List<String>? infoTransferencia,
+  }) async {
     final nombreNegocio =
         await _leerConfig('nombre_negocio', fallback: 'POSify');
+
+    String medioPagoFinal = medioPago ?? '';
+    if (medioPagoFinal.isEmpty && _pedidoId != null) {
+      final pedRow = await _db.customSelect(
+        'SELECT COALESCE(medio_pago, "") AS medio_pago FROM pedidos WHERE id = ?',
+        variables: [Variable<int>(_pedidoId!)],
+      ).getSingleOrNull();
+      medioPagoFinal = (pedRow?.data['medio_pago'] as String?) ?? '';
+    }
+
+    final transferencias = infoTransferencia ??
+        await MediosPagoService(_db).obtenerLineasTicket();
+
     return TicketData(
       nombreNegocio: nombreNegocio,
       pedidoId: _pedidoId ?? widget.pedidoId,
@@ -518,6 +544,8 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
       fecha: DateTime.now(),
       impresoCliente: _impresoCliente,
       impresoCocina: _impresoCocina,
+      medioPago: medioPagoFinal,
+      infoTransferencia: transferencias,
     );
   }
 
@@ -549,30 +577,27 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
       return;
     }
 
-    final confirmar = await showDialog<bool>(
+    final mediosPagoConfig =
+        await MediosPagoService(_db).obtenerConfiguracion();
+    if (!mounted) return;
+
+    final resultado = await DialogoCobrarPedido.mostrar(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Cerrar pedido'),
-        content: const Text(
-          'Se generará la factura final con el código de turno. ¿Deseas continuar?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Cerrar pedido'),
-          ),
-        ],
-      ),
+      codigoTurno: codigoTurnoDesde(_numeroTurno),
+      referencia: _referencia.isNotEmpty ? _referencia : widget.titulo,
+      cliente: _cliente,
+      total: _total,
+      config: mediosPagoConfig,
     );
 
-    if (confirmar != true) return;
+    if (resultado == null || !resultado.confirmado) return;
 
-    await _actualizarEstadoPedido('cerrado');
-    final data = await _construirTicketData(estado: 'cerrado');
+    await _actualizarEstadoPedido('cerrado', medioPago: resultado.medioPago);
+    final data = await _construirTicketData(
+      estado: 'cerrado',
+      medioPago: resultado.medioPago,
+      infoTransferencia: mediosPagoConfig.lineasParaTicket,
+    );
 
     if (!mounted) return;
     await Navigator.push(
@@ -1847,7 +1872,7 @@ class _ProductosLista extends ConsumerWidget {
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
           gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
             maxCrossAxisExtent: 340,
-            mainAxisExtent: 128,
+            mainAxisExtent: 154,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
           ),
@@ -1907,96 +1932,113 @@ class _ProductoTileRapido extends StatelessWidget {
               width: enCarrito ? 1.5 : 1,
             ),
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      producto.nombre,
+              // Nombre del producto ocupando todo el ancho de la tarjeta en hasta 2 líneas
+              Text(
+                producto.nombre,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                  height: 1.2,
+                ),
+              ),
+              if (producto.descripcion.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text(
+                  producto.descripcion,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+              ],
+              const Spacer(),
+              // Fila inferior: Precio en negrita y botón Añadir o selector de cantidad
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Flexible(
+                    child: Text(
+                      _formatMoney(producto.precio),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    if (producto.descripcion.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        producto.descripcion,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 11, color: AppColors.textMuted),
-                      ),
-                    ],
-                    const SizedBox(height: 4),
-                    Text(
-                      _formatMoney(producto.precio),
-                      style: const TextStyle(
                         fontWeight: FontWeight.w800,
-                        fontSize: 13.5,
+                        fontSize: 14,
                         color: AppColors.primary,
                       ),
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (!enCarrito)
-                FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.agregarProductos,
-                    foregroundColor: Colors.white,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    visualDensity: VisualDensity.compact,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
                   ),
-                  onPressed: onAgregarRapido,
-                  icon: const Icon(Icons.add_rounded, size: 18),
-                  label: const Text(
-                    'Añadir',
-                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
-                  ),
-                )
-              else
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _BotonRedondo(
-                      icon: Icons.remove,
-                      habilitado: true,
-                      color: AppColors.error,
-                      onTap: onQuitarRapido,
-                    ),
-                    SizedBox(
-                      width: 28,
-                      child: Text(
-                        '$cantidad',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 14,
-                          color: AppColors.textPrimary,
+                  const SizedBox(width: 4),
+                  if (!enCarrito)
+                    FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.agregarProductos,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
                         ),
                       ),
+                      onPressed: onAgregarRapido,
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.add_rounded, size: 16),
+                          SizedBox(width: 2),
+                          Text(
+                            'Añadir',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _BotonRedondo(
+                          icon: Icons.remove,
+                          habilitado: true,
+                          color: AppColors.error,
+                          onTap: onQuitarRapido,
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          child: Text(
+                            '$cantidad',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 14,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        ),
+                        _BotonRedondo(
+                          icon: Icons.add,
+                          habilitado: true,
+                          color: AppColors.agregarProductos,
+                          onTap: onAgregarRapido,
+                        ),
+                      ],
                     ),
-                    _BotonRedondo(
-                      icon: Icons.add,
-                      habilitado: true,
-                      color: AppColors.agregarProductos,
-                      onTap: onAgregarRapido,
-                    ),
-                  ],
-                ),
+                ],
+              ),
             ],
           ),
         ),

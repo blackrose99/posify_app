@@ -80,7 +80,8 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
     final pedidosRows = await _db.customSelect(
       '''
       SELECT id, tipo, estado, referencia, cliente, mesero, valor_domicilio,
-             COALESCE(numero_turno, 0) AS numero_turno
+             COALESCE(numero_turno, 0) AS numero_turno,
+             COALESCE(medio_pago, '') AS medio_pago
       FROM pedidos
       WHERE jornada_id = ?
       ORDER BY id DESC
@@ -121,6 +122,7 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
           domicilio: domicilio,
           total: total,
           numeroTurno: (data['numero_turno'] as int?) ?? 0,
+          medioPago: ((data['medio_pago'] as String?) ?? '').trim(),
         ),
       );
     }
@@ -136,6 +138,34 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
     final totalCancelados =
         cancelados.fold<double>(0, (sum, p) => sum + p.total);
 
+    // Desglose de ventas por medio de pago
+    double totalEfectivo = 0;
+    int cantEfectivo = 0;
+    double totalTransferencia = 0;
+    int cantTransferencia = 0;
+    final detalleTransferencias = <String, double>{};
+    final cantTransferencias = <String, int>{};
+
+    for (final p in cerrados) {
+      final medio = p.medioPago.trim();
+      if (medio.isEmpty || medio.toLowerCase().contains('efectivo')) {
+        totalEfectivo += p.total;
+        cantEfectivo++;
+      } else {
+        totalTransferencia += p.total;
+        cantTransferencia++;
+        final tag = medio
+            .replaceAll('Transferencia', '')
+            .replaceAll('(', '')
+            .replaceAll(')', '')
+            .replaceAll('-', '')
+            .trim();
+        final key = tag.isNotEmpty ? tag : 'General';
+        detalleTransferencias[key] = (detalleTransferencias[key] ?? 0) + p.total;
+        cantTransferencias[key] = (cantTransferencias[key] ?? 0) + 1;
+      }
+    }
+
     if (!mounted) return;
     setState(() {
       _pedidos = pedidos;
@@ -147,6 +177,12 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
         totalCanceladosMonto: totalCancelados,
         totalPedidos: pedidos.length,
         totalCerrados: cerrados.length,
+        totalEfectivo: totalEfectivo,
+        cantEfectivo: cantEfectivo,
+        totalTransferencia: totalTransferencia,
+        cantTransferencia: cantTransferencia,
+        detalleTransferencias: detalleTransferencias,
+        cantTransferencias: cantTransferencias,
       );
       _loading = false;
     });
@@ -215,6 +251,7 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
       cobrarDomicilio: pedido.domicilio > 0,
       estadoPedido: pedido.estado,
       fecha: DateTime.now(),
+      medioPago: pedido.medioPago,
     );
 
     if (!mounted) return;
@@ -315,6 +352,20 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
     buffer.writeln('----------------------------------------');
     buffer.writeln('TOTAL PRODUCTOS VENDIDOS: ${_formatMoney(totalProductos)}');
     buffer.writeln('TOTAL DOMICILIOS: ${_formatMoney(totalDomicilios)}');
+    buffer.writeln('----------------------------------------');
+    buffer.writeln('VENTAS POR MEDIO DE PAGO:');
+    buffer.writeln(
+        '  • Efectivo: ${_formatMoney(_resumen.totalEfectivo)} (${_resumen.cantEfectivo} pedidos)');
+    buffer.writeln(
+        '  • Transferencias: ${_formatMoney(_resumen.totalTransferencia)} (${_resumen.cantTransferencia} pedidos)');
+    if (_resumen.detalleTransferencias.isNotEmpty) {
+      for (final entry in _resumen.detalleTransferencias.entries) {
+        final cant = _resumen.cantTransferencias[entry.key] ?? 1;
+        buffer.writeln(
+            '    - ${entry.key}: ${_formatMoney(entry.value)} ($cant pedidos)');
+      }
+    }
+    buffer.writeln('----------------------------------------');
     buffer.writeln(
         'CANCELADOS (informativo): $pedidosCancelados pedido(s) - ${_formatMoney(totalCancelados)}');
     buffer.writeln('TOTAL GENERAL: ${_formatMoney(totalGeneral)}');
@@ -382,6 +433,7 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
         'referencia',
         'cliente',
         'mesero',
+        'medio_pago',
         'items',
         'subtotal',
         'domicilio',
@@ -399,12 +451,19 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
         p.referencia,
         p.cliente,
         p.mesero,
+        p.medioPago.isNotEmpty ? p.medioPago : 'Efectivo',
         p.itemsCount,
         p.subtotal.toStringAsFixed(2),
         p.domicilio.toStringAsFixed(2),
         p.total.toStringAsFixed(2),
       ]);
     }
+
+    filas.add([]);
+    filas.add(['RESUMEN DE VENTAS POR MEDIO DE PAGO']);
+    filas.add(['Efectivo', _resumen.totalEfectivo.toStringAsFixed(2), '${_resumen.cantEfectivo} pedidos']);
+    filas.add(['Transferencias', _resumen.totalTransferencia.toStringAsFixed(2), '${_resumen.cantTransferencia} pedidos']);
+    filas.add(['TOTAL GENERAL', _resumen.totalGeneral.toStringAsFixed(2), '${_resumen.totalCerrados} pedidos']);
 
     final contenido = const ListToCsvConverter().convert(filas);
     final dir = await getTemporaryDirectory();
@@ -603,6 +662,166 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                         ],
                       ),
                       const SizedBox(height: 8),
+                      // Desglose de Ventas por Medio de Pago (Efectivo y Transferencias)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: AppColors.primary.withValues(alpha: 0.18),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(Icons.payments_outlined,
+                                    size: 17, color: AppColors.primary),
+                                SizedBox(width: 6),
+                                Text(
+                                  'Desglose por medio de pago:',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 12.5,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF15803D)
+                                          .withValues(alpha: 0.08),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: const Color(0xFF15803D)
+                                            .withValues(alpha: 0.25),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          '💵 Efectivo',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFF15803D),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          _formatMoney(_resumen.totalEfectivo),
+                                          style: const TextStyle(
+                                            fontSize: 14.5,
+                                            fontWeight: FontWeight.w900,
+                                            color: Color(0xFF15803D),
+                                          ),
+                                        ),
+                                        Text(
+                                          '${_resumen.cantEfectivo} pedido(s)',
+                                          style: const TextStyle(
+                                            fontSize: 10.5,
+                                            color: AppColors.textMuted,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF0284C7)
+                                          .withValues(alpha: 0.08),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: const Color(0xFF0284C7)
+                                            .withValues(alpha: 0.25),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          '📱 Transferencias',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFF0284C7),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          _formatMoney(
+                                              _resumen.totalTransferencia),
+                                          style: const TextStyle(
+                                            fontSize: 14.5,
+                                            fontWeight: FontWeight.w900,
+                                            color: Color(0xFF0284C7),
+                                          ),
+                                        ),
+                                        Text(
+                                          '${_resumen.cantTransferencia} pedido(s)',
+                                          style: const TextStyle(
+                                            fontSize: 10.5,
+                                            color: AppColors.textMuted,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (_resumen.detalleTransferencias.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 4,
+                                children: _resumen
+                                    .detalleTransferencias.entries
+                                    .map((e) {
+                                  final cant =
+                                      _resumen.cantTransferencias[e.key] ?? 1;
+                                  return Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 7, vertical: 2.5),
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.shade100,
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(
+                                          color: Colors.grey.shade300),
+                                    ),
+                                    child: Text(
+                                      '${e.key}: ${_formatMoney(e.value)} ($cant)',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF334155),
+                                      ),
+                                    ),
+                                  );
+                                }).toList(),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
                       Align(
                         alignment: Alignment.centerLeft,
                         child: Wrap(
@@ -725,6 +944,36 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                                             ),
                                           ),
                                         ),
+                                        if (p.medioPago.isNotEmpty) ...[
+                                          const SizedBox(width: 8),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 8, vertical: 3),
+                                            decoration: BoxDecoration(
+                                              color: p.medioPago
+                                                      .toLowerCase()
+                                                      .contains('efectivo')
+                                                  ? const Color(0xFF15803D)
+                                                      .withValues(alpha: 0.12)
+                                                  : const Color(0xFF0284C7)
+                                                      .withValues(alpha: 0.12),
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                            ),
+                                            child: Text(
+                                              p.medioPago,
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w700,
+                                                color: p.medioPago
+                                                        .toLowerCase()
+                                                        .contains('efectivo')
+                                                    ? const Color(0xFF15803D)
+                                                    : const Color(0xFF0284C7),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                         const Spacer(),
                                         Text(
                                           p.estado,
@@ -814,6 +1063,12 @@ class _ResumenVentas {
   final double totalCanceladosMonto;
   final int totalPedidos;
   final int totalCerrados;
+  final double totalEfectivo;
+  final int cantEfectivo;
+  final double totalTransferencia;
+  final int cantTransferencia;
+  final Map<String, double> detalleTransferencias;
+  final Map<String, int> cantTransferencias;
 
   const _ResumenVentas({
     this.totalProductos = 0,
@@ -823,6 +1078,12 @@ class _ResumenVentas {
     this.totalCanceladosMonto = 0,
     this.totalPedidos = 0,
     this.totalCerrados = 0,
+    this.totalEfectivo = 0,
+    this.cantEfectivo = 0,
+    this.totalTransferencia = 0,
+    this.cantTransferencia = 0,
+    this.detalleTransferencias = const {},
+    this.cantTransferencias = const {},
   });
 }
 
@@ -838,6 +1099,7 @@ class _PedidoHistorial {
   final double domicilio;
   final double total;
   final int numeroTurno;
+  final String medioPago;
 
   const _PedidoHistorial({
     required this.id,
@@ -851,6 +1113,7 @@ class _PedidoHistorial {
     this.numeroTurno = 0,
     required this.domicilio,
     required this.total,
+    this.medioPago = '',
   });
 }
 

@@ -11,8 +11,9 @@ import '../../../../injection_container.dart';
 import '../../../impresion/bluetooth_printer_service.dart';
 import '../../../impresion/ticket_builder.dart';
 import '../../../impresion/ticket_data.dart';
-import '../../../productos/presentation/providers/productos_provider.dart';
 import '../../domain/entities/item_pedido.dart';
+import '../../../../core/services/medios_pago_service.dart';
+import '../widgets/dialogo_cobrar_pedido.dart';
 import 'admin_config_screen.dart';
 import 'jornada_historial_screen.dart';
 import 'pedido_screen.dart';
@@ -29,6 +30,7 @@ class MesasScreen extends ConsumerStatefulWidget {
 
 class _MesasScreenState extends ConsumerState<MesasScreen> {
   final AppDatabase _db = sl<AppDatabase>();
+  static bool _estructuraAsegurada = false;
 
   bool _loading = true;
   String _vistaJornadas = 'abiertas';
@@ -66,12 +68,9 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
   Future<void> _cargarDatos() async {
     setState(() => _loading = true);
 
-    await _asegurarEstructuraJornadas();
-    await _db.asegurarDatosInicialesDePrueba();
-    if (mounted) {
-      ref.invalidate(categoriasProvider);
-      ref.invalidate(productosProvider);
-      ref.invalidate(adicionalesProvider);
+    if (!_estructuraAsegurada) {
+      await _asegurarEstructuraJornadas();
+      _estructuraAsegurada = true;
     }
 
     final jornadasRows = await _db.customSelect(
@@ -243,6 +242,9 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     await _ejecutarSeguro(
       "ALTER TABLE pedidos ADD COLUMN impreso_cocina INTEGER NOT NULL DEFAULT 0",
     );
+    await _ejecutarSeguro(
+      "ALTER TABLE pedidos ADD COLUMN medio_pago TEXT NOT NULL DEFAULT ''",
+    );
 
     await _asegurarClaveConfig('valor_domicilio', '5000');
     await _asegurarClaveConfig('printer_device_id', '');
@@ -313,7 +315,8 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       SELECT id, tipo, estado, referencia, cliente, mesero, valor_domicilio,
              COALESCE(numero_turno, 0) AS numero_turno,
              COALESCE(impreso_cliente, 0) AS impreso_cliente,
-             COALESCE(impreso_cocina, 0) AS impreso_cocina
+             COALESCE(impreso_cocina, 0) AS impreso_cocina,
+             COALESCE(medio_pago, '') AS medio_pago
       FROM pedidos
       WHERE jornada_id = ? AND estado = ?
       ORDER BY id DESC
@@ -321,47 +324,59 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       variables: [Variable<int>(jornadaId), Variable<String>(estado)],
     ).get();
 
+    if (rows.isEmpty) return <_PedidoResumen>[];
+
+    // Consulta por lote para optimizar consultas y evitar decenas de selects individuales
+    final pedidoIds = rows.map((r) => r.data['id'] as int).toList();
+    final placeholders = List.filled(pedidoIds.length, '?').join(',');
+    final itemsRows = await _db.customSelect(
+      '''
+      SELECT pedido_id, nombre_producto, cantidad, precio
+      FROM items_pedido
+      WHERE pedido_id IN ($placeholders)
+      ORDER BY id ASC
+      ''',
+      variables: pedidoIds.map((id) => Variable<int>(id)).toList(),
+    ).get();
+
+    final itemsPorPedido = <int, List<Map<String, dynamic>>>{};
+    for (final ir in itemsRows) {
+      final pid = ir.data['pedido_id'] as int;
+      itemsPorPedido.putIfAbsent(pid, () => []).add(ir.data);
+    }
+
     final pedidos = <_PedidoResumen>[];
     for (final row in rows) {
       final data = row.data;
       final pedidoId = data['id'] as int;
-      final itemsStats = await _db.customSelect(
-        '''
-        SELECT COALESCE(COUNT(id), 0) AS items_count,
-               COALESCE(SUM(precio * cantidad), 0) AS subtotal
-        FROM items_pedido
-        WHERE pedido_id = ?
-        ''',
-        variables: [Variable<int>(pedidoId)],
-      ).getSingle();
-      final statData = itemsStats.data;
+      final items = itemsPorPedido[pedidoId] ?? const [];
 
-      final itemsRows = await _db.customSelect(
-        '''
-        SELECT nombre_producto, cantidad
-        FROM items_pedido
-        WHERE pedido_id = ?
-        ORDER BY id ASC
-        ''',
-        variables: [Variable<int>(pedidoId)],
-      ).get();
-      final resumenItems = itemsRows
-          .map((r) => '${r.data['cantidad']}x ${r.data['nombre_producto']}')
-          .toList();
+      int itemsCount = 0;
+      double subtotal = 0;
+      final resumenItems = <String>[];
+      for (final itm in items) {
+        final cant = (itm['cantidad'] as int?) ?? 1;
+        final prec = (itm['precio'] as num?)?.toDouble() ?? 0;
+        final nom = (itm['nombre_producto'] as String?) ?? '';
+        itemsCount += cant;
+        subtotal += prec * cant;
+        resumenItems.add('${cant}x $nom');
+      }
 
       pedidos.add(_PedidoResumen(
-        id: data['id'] as int,
+        id: pedidoId,
         tipo: (data['tipo'] as String?) ?? 'mesa',
         estado: (data['estado'] as String?) ?? 'abierto',
         referencia: ((data['referencia'] as String?) ?? '').trim(),
         cliente: ((data['cliente'] as String?) ?? '').trim(),
         mesero: ((data['mesero'] as String?) ?? '').trim(),
-        itemsCount: (statData['items_count'] as int?) ?? 0,
-        subtotal: (statData['subtotal'] as num?)?.toDouble() ?? 0,
+        itemsCount: itemsCount,
+        subtotal: subtotal,
         valorDomicilio: (data['valor_domicilio'] as num?)?.toDouble() ?? 0,
         numeroTurno: (data['numero_turno'] as int?) ?? 0,
         impresoCliente: ((data['impreso_cliente'] as int?) ?? 0) == 1,
         impresoCocina: ((data['impreso_cocina'] as int?) ?? 0) == 1,
+        medioPago: ((data['medio_pago'] as String?) ?? '').trim(),
         resumenItems: resumenItems,
       ));
     }
@@ -924,18 +939,27 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     await _cargarDatos();
   }
 
-  Future<void> _actualizarEstadoPedido(int pedidoId, String estado) async {
+  Future<void> _actualizarEstadoPedido(int pedidoId, String estado, {String medioPago = ''}) async {
     final cerradoEn = estado == 'abierto' ? null : _nowEpochMs();
-    await _db.customStatement(
-      "UPDATE pedidos SET estado = ?, cerrado_en = ? WHERE id = ?",
-      [estado, cerradoEn, pedidoId],
-    );
+    if (medioPago.isNotEmpty) {
+      await _db.customStatement(
+        "UPDATE pedidos SET estado = ?, cerrado_en = ?, medio_pago = ? WHERE id = ?",
+        [estado, cerradoEn, medioPago, pedidoId],
+      );
+    } else {
+      await _db.customStatement(
+        "UPDATE pedidos SET estado = ?, cerrado_en = ? WHERE id = ?",
+        [estado, cerradoEn, pedidoId],
+      );
+    }
     await _cargarDatos();
   }
 
   Future<TicketData> _construirTicketData(
     _PedidoResumen pedido, {
     required String estado,
+    String? medioPago,
+    List<String>? infoTransferencia,
   }) async {
     final rows = await _db.customSelect(
       '''
@@ -972,6 +996,10 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     final nombreNegocio =
         await _leerConfig('nombre_negocio', fallback: 'POSify');
 
+    final transferencias = infoTransferencia ??
+        await MediosPagoService(_db).obtenerLineasTicket();
+    final medioFinal = medioPago ?? pedido.medioPago;
+
     return TicketData(
       nombreNegocio: nombreNegocio,
       pedidoId: pedido.id,
@@ -987,6 +1015,8 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       fecha: DateTime.now(),
       impresoCliente: pedido.impresoCliente,
       impresoCocina: pedido.impresoCocina,
+      medioPago: medioFinal,
+      infoTransferencia: transferencias,
     );
   }
 
@@ -1207,34 +1237,32 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
       return;
     }
 
-    final confirmar = await showDialog<bool>(
+    final mediosPagoConfig =
+        await MediosPagoService(_db).obtenerConfiguracion();
+    if (!mounted) return;
+
+    final resultado = await DialogoCobrarPedido.mostrar(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Cerrar y cobrar pedido'),
-        content: const Text(
-          'Se generará la factura final con el código de turno. ¿Deseas continuar?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton.icon(
-            style: FilledButton.styleFrom(
-              backgroundColor: AppColors.cobrarCerrar,
-            ),
-            onPressed: () => Navigator.pop(dialogContext, true),
-            icon: const Icon(Icons.point_of_sale_rounded, size: 18),
-            label: const Text('Cerrar pedido'),
-          ),
-        ],
+      codigoTurno: codigoTurnoDesde(
+        pedido.numeroTurno > 0 ? pedido.numeroTurno : pedido.id,
       ),
+      referencia: pedido.referencia.isNotEmpty
+          ? pedido.referencia
+          : (pedido.tipo == 'domicilio' ? 'Domicilio' : 'Mesa'),
+      cliente: pedido.cliente,
+      total: pedido.total,
+      config: mediosPagoConfig,
     );
 
-    if (confirmar != true) return;
+    if (resultado == null || !resultado.confirmado) return;
 
-    await _actualizarEstadoPedido(pedido.id, 'cerrado');
-    final data = await _construirTicketData(pedido, estado: 'cerrado');
+    await _actualizarEstadoPedido(pedido.id, 'cerrado', medioPago: resultado.medioPago);
+    final data = await _construirTicketData(
+      pedido,
+      estado: 'cerrado',
+      medioPago: resultado.medioPago,
+      infoTransferencia: mediosPagoConfig.lineasParaTicket,
+    );
 
     if (!mounted) return;
     await Navigator.push(
@@ -1368,30 +1396,29 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                     children: [
                       Expanded(
                         child: SegmentedButton<String>(
+                          showSelectedIcon: false,
                           style: ButtonStyle(
-                            visualDensity: VisualDensity.standard,
+                            visualDensity: VisualDensity.compact,
                             textStyle: WidgetStateProperty.all(
                               const TextStyle(
-                                  fontSize: 13, fontWeight: FontWeight.w700),
+                                  fontSize: 12.5, fontWeight: FontWeight.w700),
                             ),
                             padding: WidgetStateProperty.all(
                               const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 8),
+                                  horizontal: 4, vertical: 8),
                             ),
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
                           segments: const [
                             ButtonSegment(
                               value: 'abiertas',
-                              icon: Icon(Icons.storefront_rounded, size: 17),
-                              label: Text('Abiertas',
-                                  maxLines: 1, softWrap: false),
+                              icon: Icon(Icons.storefront_rounded, size: 16),
+                              label: Text('Abiertas'),
                             ),
                             ButtonSegment(
                               value: 'cerradas',
-                              icon: Icon(Icons.history_rounded, size: 17),
-                              label: Text('Cerradas',
-                                  maxLines: 1, softWrap: false),
+                              icon: Icon(Icons.history_rounded, size: 16),
+                              label: Text('Cerradas'),
                             ),
                           ],
                           selected: {_vistaJornadas},
@@ -1408,11 +1435,16 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                           backgroundColor: AppColors.primaryDark,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
+                              horizontal: 10, vertical: 8),
+                          visualDensity: VisualDensity.compact,
                         ),
                         onPressed: _crearJornada,
-                        icon: const Icon(Icons.add_business_rounded, size: 18),
-                        label: const Text('Nueva jornada'),
+                        icon: const Icon(Icons.add_business_rounded, size: 16),
+                        label: const Text(
+                          'Nueva jornada',
+                          style: TextStyle(
+                              fontSize: 12.5, fontWeight: FontWeight.w700),
+                        ),
                       ),
                     ],
                   ),
@@ -1675,46 +1707,80 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                _TurnoBadge(
-                  numeroTurno:
-                      pedido.numeroTurno > 0 ? pedido.numeroTurno : pedido.id,
-                ),
-                const SizedBox(width: 8),
-                _EstadoTag(estado: pedido.estado),
-                const SizedBox(width: 8),
-                if (!tieneProductos && pedido.estado == 'abierto')
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: AppColors.warning.withValues(alpha: 0.14),
-                      borderRadius: BorderRadius.circular(100),
-                      border: Border.all(
-                        color: AppColors.warning.withValues(alpha: 0.5),
+                Expanded(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      _TurnoBadge(
+                        numeroTurno:
+                            pedido.numeroTurno > 0 ? pedido.numeroTurno : pedido.id,
                       ),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.info_outline_rounded,
-                          size: 13,
-                          color: AppColors.warning,
-                        ),
-                        SizedBox(width: 4),
-                        Text(
-                          'Sin productos',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.warning,
+                      _EstadoTag(estado: pedido.estado),
+                      if (!tieneProductos && pedido.estado == 'abierto')
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppColors.warning.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(100),
+                            border: Border.all(
+                              color: AppColors.warning.withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.info_outline_rounded,
+                                size: 13,
+                                color: AppColors.warning,
+                              ),
+                              SizedBox(width: 4),
+                              Text(
+                                'Sin productos',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.warning,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ],
-                    ),
+                      if (pedido.medioPago.isNotEmpty)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: pedido.medioPago.toLowerCase().contains('efectivo')
+                                ? const Color(0xFF15803D).withValues(alpha: 0.12)
+                                : const Color(0xFF0284C7).withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: pedido.medioPago.toLowerCase().contains('efectivo')
+                                  ? const Color(0xFF15803D).withValues(alpha: 0.3)
+                                  : const Color(0xFF0284C7).withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: Text(
+                            pedido.medioPago,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: pedido.medioPago.toLowerCase().contains('efectivo')
+                                  ? const Color(0xFF15803D)
+                                  : const Color(0xFF0284C7),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
-                const Spacer(),
+                ),
+                const SizedBox(width: 6),
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -1970,63 +2036,68 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                 Row(
                   children: [
                     Expanded(
-                      flex: 2,
+                      flex: 5,
                       child: FilledButton.icon(
                         style: FilledButton.styleFrom(
                           backgroundColor: AppColors.cobrarCerrar,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 9),
+                              horizontal: 6, vertical: 8),
+                          visualDensity: VisualDensity.compact,
                         ),
                         onPressed: () => _cerrarPedidoConImpresion(pedido),
                         icon:
-                            const Icon(Icons.point_of_sale_rounded, size: 17),
+                            const Icon(Icons.point_of_sale_rounded, size: 16),
                         label: const Text(
-                          'Cobrar / Cerrar',
+                          'Cobrar',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                              fontSize: 12.5, fontWeight: FontWeight.w700),
+                              fontSize: 12, fontWeight: FontWeight.w700),
                         ),
                       ),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 4),
                     Expanded(
+                      flex: 4,
                       child: OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
                           foregroundColor: AppColors.editarDatos,
                           side: const BorderSide(color: AppColors.editarDatos),
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 9),
+                              horizontal: 4, vertical: 8),
+                          visualDensity: VisualDensity.compact,
                         ),
                         onPressed: () => _editarPedidoAbierto(pedido),
-                        icon: const Icon(Icons.edit_note_rounded, size: 17),
+                        icon: const Icon(Icons.edit_note_rounded, size: 16),
                         label: const Text(
                           'Datos',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                              fontSize: 12, fontWeight: FontWeight.w700),
+                              fontSize: 11.5, fontWeight: FontWeight.w700),
                         ),
                       ),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 4),
                     Expanded(
+                      flex: 5,
                       child: OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
                           foregroundColor: AppColors.error,
                           side: const BorderSide(color: AppColors.error),
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 9),
+                              horizontal: 4, vertical: 8),
+                          visualDensity: VisualDensity.compact,
                         ),
                         onPressed: () => _confirmarCancelacion(pedido),
-                        icon: const Icon(Icons.cancel_outlined, size: 16),
+                        icon: const Icon(Icons.cancel_outlined, size: 15),
                         label: const Text(
                           'Cancelar',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                              fontSize: 12, fontWeight: FontWeight.w700),
+                              fontSize: 11.5, fontWeight: FontWeight.w700),
                         ),
                       ),
                     ),
@@ -2561,7 +2632,10 @@ class _PedidoResumen {
   final int numeroTurno;
   final bool impresoCliente;
   final bool impresoCocina;
+  final String medioPago;
   final List<String> resumenItems;
+
+  double get total => subtotal + valorDomicilio;
 
   const _PedidoResumen({
     required this.id,
@@ -2576,6 +2650,7 @@ class _PedidoResumen {
     this.numeroTurno = 0,
     this.impresoCliente = false,
     this.impresoCocina = false,
+    this.medioPago = '',
     this.resumenItems = const [],
   });
 }
@@ -2608,7 +2683,7 @@ class _BotonEstadoFiltro extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
@@ -2616,25 +2691,41 @@ class _BotonEstadoFiltro extends StatelessWidget {
               width: selected ? 1.5 : 1,
             ),
           ),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                icon,
-                size: 16,
-                color: selected ? Colors.white : color,
-              ),
-              const SizedBox(width: 5),
-              Flexible(
-                child: Text(
-                  '$label ($count)',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: selected ? Colors.white : AppColors.textPrimary,
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    icon,
+                    size: 14,
+                    color: selected ? Colors.white : color,
                   ),
+                  const SizedBox(width: 3),
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: selected ? Colors.white : AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                  color: selected ? Colors.white : color,
                 ),
               ),
             ],

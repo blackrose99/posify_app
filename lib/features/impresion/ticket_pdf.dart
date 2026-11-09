@@ -118,6 +118,41 @@ pw.Widget _filaTotal(String etiqueta, double valor, {bool destacado = false}) {
   );
 }
 
+pw.Widget _filaTexto(String etiqueta, String texto) {
+  return pw.Padding(
+    padding: const pw.EdgeInsets.symmetric(vertical: 2),
+    child: pw.Row(
+      mainAxisSize: pw.MainAxisSize.min,
+      children: [
+        pw.SizedBox(
+          width: 90,
+          child: pw.Text(
+            etiqueta,
+            textAlign: pw.TextAlign.right,
+            style: const pw.TextStyle(
+              fontSize: 11,
+              color: PdfColors.grey700,
+            ),
+          ),
+        ),
+        pw.SizedBox(width: 12),
+        pw.SizedBox(
+          width: 80,
+          child: pw.Text(
+            texto,
+            textAlign: pw.TextAlign.right,
+            style: pw.TextStyle(
+              fontSize: 11,
+              fontWeight: pw.FontWeight.bold,
+              color: PdfColors.black,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 /// Genera una factura PDF elegante con el detalle completo del pedido:
 /// código de turno, productos, adicionales, notas y totales.
 Future<Uint8List> buildTicketPdf(TicketData data) async {
@@ -225,9 +260,45 @@ Future<Uint8List> buildTicketPdf(TicketData data) async {
                   if (data.domicilioCobrado > 0) _filaTotal('Domicilio', data.domicilioCobrado),
                   pw.SizedBox(height: 6),
                   _filaTotal('TOTAL', data.total, destacado: true),
+                  if (data.medioPago.trim().isNotEmpty) ...[
+                    pw.SizedBox(height: 4),
+                    _filaTexto('Medio de pago', data.medioPago.trim()),
+                  ],
                 ],
               ),
             ),
+            if (data.infoTransferencia.isNotEmpty) ...[
+              pw.SizedBox(height: 12),
+              pw.Container(
+                width: double.infinity,
+                padding: const pw.EdgeInsets.all(8),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(color: PdfColors.grey400, width: 0.8),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+                  color: PdfColors.grey100,
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.center,
+                  children: [
+                    pw.Text(
+                      'PAGOS POR TRANSFERENCIA',
+                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9.5, color: PdfColors.grey800),
+                    ),
+                    pw.SizedBox(height: 4),
+                    ...data.infoTransferencia.map(
+                      (linea) => pw.Padding(
+                        padding: const pw.EdgeInsets.symmetric(vertical: 1),
+                        child: pw.Text(
+                          linea,
+                          style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+                          textAlign: pw.TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             pw.Spacer(),
             pw.Center(
               child: pw.Text(

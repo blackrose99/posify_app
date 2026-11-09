@@ -186,6 +186,17 @@ String buildPlainTicket(TicketData data, {AnchoPapel ancho = AnchoPapel.mm58}) {
   }
   buffer.writeln(_linea(w, '='));
   buffer.writeln(_dosColumnas('TOTAL', formatMoney(data.total), w));
+  if (data.medioPago.trim().isNotEmpty) {
+    buffer.writeln(_linea(w, '-'));
+    buffer.writeln(_dosColumnas('Medio de pago', data.medioPago.trim(), w));
+  }
+  if (data.infoTransferencia.isNotEmpty) {
+    buffer.writeln(_linea(w, '-'));
+    buffer.writeln(_centrar('PAGOS POR TRANSFERENCIA:', w));
+    for (final linea in data.infoTransferencia) {
+      buffer.writeln(_centrar(linea, w));
+    }
+  }
   buffer.writeln(_linea(w, '='));
   buffer.writeln(_centrar('Gracias por tu compra', w));
   // Holgura final para corte limpio sin truncar texto (al menos 1.5 cm - 8 saltos de línea)
@@ -254,6 +265,17 @@ Future<List<int>> buildRasterEscPosBytes(
   }
   itemsList.add(_TicketLineItem.divider());
   itemsList.add(_TicketLineItem.row('TOTAL', formatMoney(data.total), font: img.arial24, isBold: true));
+  if (data.medioPago.trim().isNotEmpty) {
+    itemsList.add(_TicketLineItem.divider());
+    itemsList.add(_TicketLineItem.row('Medio de pago', data.medioPago.trim(), font: img.arial14, isBold: true));
+  }
+  if (data.infoTransferencia.isNotEmpty) {
+    itemsList.add(_TicketLineItem.divider());
+    itemsList.add(_TicketLineItem.text('PAGOS POR TRANSFERENCIA:', font: img.arial14, align: _TextAlign.center, isBold: true));
+    for (final linea in data.infoTransferencia) {
+      itemsList.add(_TicketLineItem.text(linea, font: img.arial14, align: _TextAlign.center));
+    }
+  }
   itemsList.add(_TicketLineItem.divider());
   itemsList.add(_TicketLineItem.text('Gracias por tu compra', font: img.arial14, align: _TextAlign.center));
 
@@ -395,6 +417,18 @@ List<int> buildStandardEscPosBytes(
   bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
   bytes.addAll(latin1.encode('${_dosColumnas('TOTAL', formatMoney(data.total), w)}\n'));
   bytes.addAll([0x1B, 0x45, 0x00]); // Normal
+  if (data.medioPago.trim().isNotEmpty) {
+    bytes.addAll(latin1.encode('${'-' * w}\n'));
+    bytes.addAll(latin1.encode('${_dosColumnas('Medio de pago', data.medioPago.trim(), w)}\n'));
+  }
+  if (data.infoTransferencia.isNotEmpty) {
+    bytes.addAll(latin1.encode('${'-' * w}\n'));
+    bytes.addAll([0x1B, 0x61, 0x01]); // Centrado
+    bytes.addAll(latin1.encode('PAGOS POR TRANSFERENCIA:\n'));
+    for (final linea in data.infoTransferencia) {
+      bytes.addAll(latin1.encode('$linea\n'));
+    }
+  }
   bytes.addAll(latin1.encode('${'=' * w}\n'));
 
   // 7. Pie de ticket

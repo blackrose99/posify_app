@@ -32,6 +32,8 @@ class TicketData {
   final bool entregado;
   final bool impresoCliente;
   final bool impresoCocina;
+  final String medioPago;
+  final List<String> infoTransferencia;
 
   const TicketData({
     required this.nombreNegocio,
@@ -49,6 +51,8 @@ class TicketData {
     this.entregado = false,
     this.impresoCliente = false,
     this.impresoCocina = false,
+    this.medioPago = '',
+    this.infoTransferencia = const [],
   });
 
   bool get esDomicilio => tipo == 'domicilio';
@@ -79,6 +83,8 @@ class TicketData {
     bool? entregado,
     bool? impresoCliente,
     bool? impresoCocina,
+    String? medioPago,
+    List<String>? infoTransferencia,
   }) {
     return TicketData(
       nombreNegocio: nombreNegocio ?? this.nombreNegocio,
@@ -96,6 +102,8 @@ class TicketData {
       entregado: entregado ?? this.entregado,
       impresoCliente: impresoCliente ?? this.impresoCliente,
       impresoCocina: impresoCocina ?? this.impresoCocina,
+      medioPago: medioPago ?? this.medioPago,
+      infoTransferencia: infoTransferencia ?? this.infoTransferencia,
     );
   }
 

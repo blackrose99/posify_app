@@ -12,6 +12,7 @@ import '../../../../database/app_database.dart';
 import '../../../../injection_container.dart';
 import 'config_categorias_screen.dart';
 import 'config_impresoras_screen.dart';
+import 'config_medios_pago_screen.dart';
 import 'config_meseros_screen.dart';
 import 'config_productos_screen.dart';
 
@@ -106,18 +107,6 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
 
     await _upsertConfig('valor_domicilio', valor.toStringAsFixed(0));
     await _cargar();
-  }
-
-  Future<void> _cargarDatosPrueba() async {
-    await _db.asegurarDatosInicialesDePrueba(forzar: true);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Datos iniciales de prueba (productos, categorías, meseros y etiquetas) cargados correctamente.',
-        ),
-      ),
-    );
   }
 
   Future<void> _exportarRespaldo() async {
@@ -231,6 +220,22 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
                 const SizedBox(height: 8),
                 Card(
                   child: ListTile(
+                    leading: const Icon(Icons.payments_outlined, color: AppColors.primary),
+                    title: const Text('Medios de pago y transferencias'),
+                    subtitle: const Text(
+                        'Efectivo, Nequi, Daviplata, Bre-B y pie de factura'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const ConfigMediosPagoScreen(),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  child: ListTile(
                     leading: const Icon(Icons.backup_outlined),
                     title: const Text('Respaldo y sincronización'),
                     subtitle: const Text(
@@ -339,21 +344,6 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
                         builder: (_) => const ConfigMeserosScreen(),
                       ),
                     ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Card(
-                  child: ListTile(
-                    leading: const Icon(
-                      Icons.science_outlined,
-                      color: AppColors.nuevoPedido,
-                    ),
-                    title: const Text('Cargar datos iniciales de prueba'),
-                    subtitle: const Text(
-                      'Asegura al menos 10 productos de prueba, categorías, meseros y etiquetas',
-                    ),
-                    trailing: const Icon(Icons.playlist_add_check_rounded),
-                    onTap: _cargarDatosPrueba,
                   ),
                 ),
               ],

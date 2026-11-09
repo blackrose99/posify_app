@@ -1,86 +1,139 @@
-# POSify — Sistema POS para Restaurantes
+# 📱 POSify — Sistema POS para Restaurantes
 
 ![POSify](POSify.png)
 
-**POSify** es una aplicación de punto de venta (POS) multiplataforma desarrollada en **Flutter**, diseñada para la gestión completa de pedidos en restaurantes y negocios de comida. Permite manejar jornadas de trabajo, pedidos de mesa y domicilio, catálogo de productos, impresión de tickets y reportes de ventas, todo desde un dispositivo móvil o de escritorio.
+[![Descargar APK](https://img.shields.io/badge/Descargar%20APK-v1.0.0%20(Release)-success?style=for-the-badge&logo=android&logoColor=white)](https://github.com/blackrose99/posify_app/releases/latest/download/app-release.apk)
+[![GitHub Releases](https://img.shields.io/badge/GitHub-Releases-blue?style=for-the-badge&logo=github)](https://github.com/blackrose99/posify_app/releases)
+[![Plataforma Android](https://img.shields.io/badge/Plataforma-Android%20%7C%20iOS%20%7C%20Escritorio-orange?style=for-the-badge&logo=flutter)](https://flutter.dev)
+[![100% Offline](https://img.shields.io/badge/Modo-100%25%20Offline%20Local-purple?style=for-the-badge&logo=sqlite)](https://sqlite.org)
+
+**POSify** es una aplicación de punto de venta (POS) y comanda móvil multiplataforma desarrollada en **Flutter**, diseñada para agilizar la gestión de pedidos, cobros, cocina, domicilios e impresión de tickets en restaurantes, bares y negocios de comida. Funciona **100% offline**, almacenando toda la información localmente en el dispositivo sin depender de internet.
 
 ---
 
-## Funcionalidades principales
+## 📥 DESCARGA DIRECTA DE LA APK (Lista para usar)
 
-- **Jornadas de trabajo** — Abre y cierra sesiones de trabajo diarias. Cada jornada agrupa todos los pedidos del turno y muestra un resumen de ventas al cerrar.
-- **Pedidos de mesa y domicilio** — Crea pedidos diferenciando entre consumo en mesa y entregas a domicilio. Cada pedido lleva número de turno, referencia, datos del cliente y mesero asignado.
-- **Catálogo de productos** — Gestión de productos organizados por categorías, con soporte para adicionales y precios personalizables.
-- **Gestión de meseros** — Registro de meseros para asignarlos a los pedidos.
-- **Impresión de tickets** — Generación e impresión de tickets vía **Bluetooth** a impresoras térmicas (protocolo ESC/POS), con vista previa y opción de guardar como PDF.
-- **Historial y reportes** — Consulta el historial de jornadas cerradas filtrado por día, semana o mes. Visualiza totales de productos vendidos, domicilios, pedidos cancelados y resumen de ventas.
-- **Exportación y backup** — Exporta datos a CSV y realiza copias de seguridad de la base de datos local.
-- **Configuración del negocio** — Nombre del negocio, valor del domicilio, configuración de impresora y administración del catálogo desde un panel de administración integrado.
+> 🚀 **¿Eres cliente o usuario final?** No necesitas compilar el código. Puedes descargar e instalar la versión lista para usar directamente en tu celular o tablet Android:
+
+### 🔗 Enlaces de Descarga
+
+| Opción | Enlace |
+|---|---|
+| 🟢 **Descarga Directa (Recomendada)** | **[👉 Descargar app-release.apk (Última versión)](https://github.com/blackrose99/posify_app/releases/latest/download/app-release.apk)** |
+| 📦 **Todas las Versiones y Novedades** | **[📂 Ver catálogo de Releases en GitHub](https://github.com/blackrose99/posify_app/releases)** |
 
 ---
 
-## Stack tecnológico
+### 📲 Cómo instalar en Android (Paso a paso)
+
+1. **Descarga el archivo**: Toca el botón verde de **[Descargar app-release.apk](https://github.com/blackrose99/posify_app/releases/latest/download/app-release.apk)** desde el navegador de tu celular o tablet.
+2. **Abrir el instalador**: Cuando termine la descarga, abre el archivo desde el panel de notificaciones o desde tu carpeta de **Descargas** (administrador de archivos).
+3. **Permitir orígenes desconocidos**: Si Android te muestra una advertencia de seguridad, toca en **Ajustes** y activa la opción **"Permitir desde esta fuente"** (o "Instalar aplicaciones de fuentes desconocidas").
+4. **Instalar / Actualizar**: Confirma tocando en **Instalar** (o **Actualizar** si ya la tenías instalada). ¡Listo! Ya puedes abrir POSify.
+
+---
+
+### 🛡️ ¡IMPORTANTE: Conservación de tus datos al actualizar!
+
+> [!IMPORTANT]
+> **NO desinstales la aplicación existente para actualizar a una nueva versión.**
+> Si ya tienes POSify instalado con tus productos, mesas y ventas reales:
+> 1. Descarga el nuevo archivo `app-release.apk`.
+> 2. Ábrelo y selecciona **"Actualizar"**.
+> 3. Android conservará intacta toda tu base de datos, historial y configuraciones.
+>
+> La aplicación utiliza migraciones automáticas no destructivas (`CREATE TABLE IF NOT EXISTS` y `ALTER TABLE`). Además, **se eliminaron todas las inserciones automáticas de datos de prueba**, garantizando que tu base de datos de producción nunca sea alterada ni reiniciada.
+
+---
+
+## 🌟 Novedades y Características Recientes
+
+### 💳 Medios de Pago Parametrizables
+- **Configuración centralizada**: Administra qué métodos de pago acepta tu negocio desde el panel de configuración (**Configuración** ➔ **Medios de Pago**).
+- **Efectivo y Transferencias**: Activa o desactiva pagos en efectivo y transferencias electrónicas.
+- **Canales de transferencia personalizados**: Configura tus cuentas activas para recibir pagos:
+  - **Nequi** (número de celular / llave Bre-B).
+  - **Daviplata**.
+  - **Bre-B** (Llaves interoperables).
+  - **Bancolombia, Dale, Movii u otras cuentas bancarias** con número, nombre de titular e identificación.
+- **Cobro guiado**: Al presionar **Cobrar / Cerrar** en cualquier pedido, el sistema solicita seleccionar si el pago fue en Efectivo o por Transferencia (permitiendo elegir la cuenta de destino).
+
+### 🧾 Datos de Pago en el Pie del Ticket de Venta
+- En cada factura entregada al cliente (ticket térmico Bluetooth ESC/POS de 58mm/80mm, impresión raster o comprobante PDF), se imprimen en el pie de página (**footer**) las cuentas y números para transferir configurados, junto con un mensaje de agradecimiento.
+
+### 📊 Desglose de Ventas en Informes de Jornada
+- Consulta el balance exacto de cada turno de trabajo discriminando:
+  - **Total de ventas en Efectivo** (monto y cantidad de pedidos).
+  - **Total de ventas por Transferencia** (monto, cantidad de pedidos y desglose por cada cuenta: Nequi, Daviplata, Bre-B, etc.).
+- Informes disponibles en pantalla, exportables a archivo **CSV** e imprimibles en formato ticket POS térmico.
+
+### 🔍 Corrección de Fuentes Grandes y Textos Recortados
+- **Escala de fuentes protegida**: Evita desbordamientos de pantalla (`RIGHT OVERFLOWED BY 12 PIXELS` o `BOTTOM OVERFLOWED`) cuando el usuario tiene configurada la fuente del celular en tamaño grande/accesibilidad.
+- **Catálogo de productos legible**: Las tarjetas de productos en toma de pedidos ahora cuentan con espacio suficiente para nombres largos de hasta 2 líneas (`Personal solo chicharrón`, `Coca Cola 330ml`), precio destacado y botones cómodos de añadir (+ / -), evitando que los meseros tengan que adivinar productos con nombres cortados como `pers...` o `coca...`.
+- **Filtros y botones adaptables**: Las etiquetas de pedidos abiertos, cerrados, cancelados y botones de acción se acomodan automáticamente sin recortarse.
+
+### ⚡ Optimización de Consultas
+- Consultas por lote (batch query `IN (...)`) para pedidos e ítems, eliminando tiempos de espera innecesarios y optimizando el rendimiento general del dispositivo.
+
+---
+
+## 📋 Funcionalidades Principales
+
+- **Jornadas de trabajo** — Abre y cierra sesiones diarias con control de base inicial, conteo de pedidos y arqueo de caja.
+- **Pedidos de mesa y domicilio** — Diferencia pedidos de mesa vs. domicilio, con turnos secuenciales, referencia, mesero asignado y estado de preparación.
+- **Comanda para cocina** — Imprime tickets específicos de cocina con los productos y adicionales solicitados.
+- **Impresión Bluetooth ESC/POS** — Conexión directa a impresoras térmicas portátiles o de mostrador de 58mm y 80mm.
+- **Exportación y Backup** — Exportación de reportes a CSV y respaldo de base de datos local SQLite.
+
+---
+
+## 🛠️ Stack Tecnológico
 
 | Capa | Tecnología |
 |---|---|
-| Framework | Flutter (Dart) |
-| Estado | Riverpod + riverpod_generator |
-| Base de datos | Drift (SQLite ORM) con code generation |
-| Inyección de dependencias | GetIt |
-| Impresión Bluetooth | flutter_blue_plus + esc_pos_utils_plus |
-| Generación de PDF | pdf + printing |
-| Compartir archivos | share_plus |
-| Exportación CSV | csv |
-| Arquitectura | Clean Architecture (domain / data / presentation) |
+| **Framework** | Flutter 3.x (Dart) |
+| **Arquitectura** | Clean Architecture (Domain / Data / Presentation) |
+| **Gestión de Estado** | Riverpod + riverpod_generator |
+| **Base de Datos Local** | Drift (SQLite ORM) con esquema protegido |
+| **Inyección de Dependencias** | GetIt |
+| **Impresión Bluetooth** | flutter_blue_plus + esc_pos_utils_plus |
+| **Documentos y Tickets** | pdf + printing |
+| **Exportación** | csv + share_plus |
 
 ---
 
-## Arquitectura
+## 🏗️ Para Desarrolladores
 
-El proyecto sigue los principios de **Clean Architecture** organizado por features:
+### Requisitos previos
+- Flutter SDK (versión 3.24 o superior recomendada)
+- Android SDK instalado y configurado
 
-```
-lib/
-├── core/              # Utilidades, constantes, errores, servicios compartidos
-├── database/          # Tablas y configuración de Drift (SQLite)
-└── features/
-    ├── facturacion/   # Entidades de factura
-    ├── impresion/     # Servicio Bluetooth, builder de tickets, PDF
-    ├── pedidos/       # Jornadas, pedidos, mesas — capa de datos, dominio y UI
-    └── productos/     # Catálogo de productos, categorías y adicionales
-```
-
-Cada feature separa claramente las capas de **dominio** (entidades y casos de uso), **datos** (repositorios y fuentes locales) y **presentación** (providers de Riverpod y pantallas Flutter).
-
----
-
-## Plataformas soportadas
-
-Android · iOS · Web · Windows · macOS · Linux
-
----
-
-## Instalación local
-
+### Instalación local del código fuente
 ```bash
 # Clonar el repositorio
-git clone <url-del-repo>
-cd barril_app
+git clone https://github.com/blackrose99/posify_app.git
+cd posify_app
 
-# Instalar dependencias
+# Descargar dependencias
 flutter pub get
 
-# Generar código (Drift + Riverpod)
+# Generar código de Drift y Riverpod (si se modifican entidades)
 dart run build_runner build --delete-conflicting-outputs
 
-# Ejecutar
+# Ejecutar en emulador o dispositivo conectado
 flutter run
 ```
 
-Requiere Flutter 3.x o superior.
+### Compilar nuevo APK Release
+Para generar el archivo APK de producción que se subirá a GitHub Releases:
+```bash
+flutter build apk --release
+```
+El archivo compilado se genera en:
+`build/app/outputs/flutter-apk/app-release.apk`
 
 ---
 
-## Sobre el proyecto
+## 📄 Licencia
 
-Este proyecto nació como solución real para un restaurante de carnes, con el objetivo de reemplazar el proceso manual de toma de pedidos en papel. Fue desarrollado completamente desde cero priorizando una experiencia de uso rápida en dispositivos táctiles, funcionamiento **100% offline** con base de datos local, y la capacidad de imprimir tickets directamente desde el celular del cajero o mesero.
+Este proyecto está protegido bajo derechos de autor. Consulta los términos de uso antes de su distribución comercial.

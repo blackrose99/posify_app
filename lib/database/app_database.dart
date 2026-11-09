@@ -29,68 +29,107 @@ class AppDatabase extends _$AppDatabase {
   MigrationStrategy get migration => MigrationStrategy(
         onCreate: (m) async {
           await m.createAll();
-          await _insertDatosIniciales();
+          await _insertDatosInicialesSeguros();
         },
         onUpgrade: (m, from, to) async {
           if (from < 2) {
-            await m.createTable(meseros);
+            try {
+              await m.createTable(meseros);
+            } catch (_) {}
           }
-          if (from < 3) {
-            await asegurarDatosInicialesDePrueba();
-          }
+          // Migraciones seguras y no destructivas: nunca borrar ni sobreescribir datos del cliente
+          await _asegurarColumnasYTablas();
+        },
+        beforeOpen: (details) async {
+          await _asegurarColumnasYTablas();
         },
       );
 
-  Future<void> _insertDatosIniciales() async {
-    // Categorías base
-    await batch((b) {
-      b.insertAll(categorias, [
-        CategoriasCompanion.insert(nombre: 'Picadas', orden: const Value(1)),
-        CategoriasCompanion.insert(
-            nombre: 'Carnes al Barril', orden: const Value(2)),
-        CategoriasCompanion.insert(nombre: 'Porciones', orden: const Value(3)),
-        CategoriasCompanion.insert(nombre: 'Bebidas', orden: const Value(4)),
-      ]);
-    });
+  Future<void> _asegurarColumnasYTablas() async {
+    // Asegura tabla de jornadas
+    await customStatement('''
+      CREATE TABLE IF NOT EXISTS jornadas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'abierta',
+        abierta_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        cerrada_en TEXT
+      )
+    ''');
 
-    // Adicionales base
-    await batch((b) {
-      b.insertAll(adicionales, [
-        AdicionalesCompanion.insert(nombre: 'Jugosa'),
-        AdicionalesCompanion.insert(nombre: 'Seca'),
-        AdicionalesCompanion.insert(nombre: 'Chicharrón crocante'),
-        AdicionalesCompanion.insert(nombre: 'Solo cerdo'),
-        AdicionalesCompanion.insert(nombre: 'Solo res'),
-        AdicionalesCompanion.insert(nombre: 'Sin guacamole'),
-        AdicionalesCompanion.insert(nombre: 'Término 3/4'),
-        AdicionalesCompanion.insert(nombre: 'Extra chimichurri'),
-      ]);
-    });
+    // Asegura tabla de etiquetas por categoría
+    await customStatement('''
+      CREATE TABLE IF NOT EXISTS categoria_etiquetas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        categoria_id INTEGER NOT NULL,
+        nombre TEXT NOT NULL,
+        activa INTEGER NOT NULL DEFAULT 1
+      )
+    ''');
 
-    // Configuración inicial
-    await batch((b) {
-      b.insertAll(configuracion, [
-        ConfiguracionCompanion.insert(clave: 'valor_domicilio', valor: '5000'),
-        ConfiguracionCompanion.insert(clave: 'total_mesas', valor: '6'),
-        ConfiguracionCompanion.insert(
-            clave: 'nombre_negocio', valor: 'Carne al Barril'),
-      ]);
-    });
-
-    // Mesas iniciales (6 mesas)
-    await batch((b) {
-      b.insertAll(mesas, [
-        for (int i = 1; i <= 6; i++) MesasCompanion.insert(nombre: 'Mesa $i'),
-      ]);
-    });
-
-    await asegurarDatosInicialesDePrueba();
+    // Columnas adicionales en pedidos (sin borrar datos existentes)
+    for (final colSql in [
+      'ALTER TABLE pedidos ADD COLUMN jornada_id INTEGER',
+      'ALTER TABLE pedidos ADD COLUMN referencia TEXT',
+      'ALTER TABLE pedidos ADD COLUMN cliente TEXT',
+      'ALTER TABLE pedidos ADD COLUMN mesero TEXT',
+      'ALTER TABLE pedidos ADD COLUMN numero_turno INTEGER',
+      'ALTER TABLE pedidos ADD COLUMN entregado INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE pedidos ADD COLUMN entregado_en INTEGER',
+      'ALTER TABLE pedidos ADD COLUMN impreso_cliente INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE pedidos ADD COLUMN impreso_cocina INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE pedidos ADD COLUMN medio_pago TEXT NOT NULL DEFAULT ""',
+      'ALTER TABLE items_pedido ADD COLUMN entregado INTEGER NOT NULL DEFAULT 0',
+    ]) {
+      try {
+        await customStatement(colSql);
+      } catch (_) {}
+    }
   }
 
-  /// Asegura que existan datos iniciales de prueba (categorías, al menos 8
-  /// productos, meseros, etiquetas por categoría y una jornada de prueba con
-  /// pedidos de ejemplo) para probar todas las funciones de la aplicación.
+  Future<void> _insertDatosInicialesSeguros() async {
+    // Solo si la base está completamente nueva (primera instalación en dispositivo limpio)
+    final existingCats = await select(categorias).get();
+    if (existingCats.isEmpty) {
+      await batch((b) {
+        b.insertAll(categorias, [
+          CategoriasCompanion.insert(nombre: 'Picadas', orden: const Value(1)),
+          CategoriasCompanion.insert(
+              nombre: 'Carnes al Barril', orden: const Value(2)),
+          CategoriasCompanion.insert(nombre: 'Porciones', orden: const Value(3)),
+          CategoriasCompanion.insert(nombre: 'Bebidas', orden: const Value(4)),
+        ]);
+      });
+    }
+
+    final existingConfig = await select(configuracion).get();
+    if (existingConfig.isEmpty) {
+      await batch((b) {
+        b.insertAll(configuracion, [
+          ConfiguracionCompanion.insert(clave: 'valor_domicilio', valor: '5000'),
+          ConfiguracionCompanion.insert(clave: 'total_mesas', valor: '6'),
+          ConfiguracionCompanion.insert(
+              clave: 'nombre_negocio', valor: 'POSify'),
+        ]);
+      });
+    }
+
+    final existingMesas = await select(mesas).get();
+    if (existingMesas.isEmpty) {
+      await batch((b) {
+        b.insertAll(mesas, [
+          for (int i = 1; i <= 6; i++) MesasCompanion.insert(nombre: 'Mesa $i'),
+        ]);
+      });
+    }
+
+    await _asegurarColumnasYTablas();
+  }
+
+  /// Ya no se siembran datos de prueba automáticamente para no alterar
+  /// la base de datos real del cliente. Solo se ejecuta si se solicita manualmente.
   Future<void> asegurarDatosInicialesDePrueba({bool forzar = false}) async {
+    if (!forzar) return;
     final flag = await (select(configuracion)
           ..where((c) => c.clave.equals('seed_datos_prueba_v1')))
         .getSingleOrNull();
