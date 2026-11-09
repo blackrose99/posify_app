@@ -2,8 +2,8 @@
 
 ![POSify](POSify.png)
 
-[![Descargar APK](https://img.shields.io/badge/Descargar%20APK-v1.0.0%20(Release)-success?style=for-the-badge&logo=android&logoColor=white)](https://github.com/blackrose99/posify_app/releases/latest/download/app-release.apk)
-[![GitHub Releases](https://img.shields.io/badge/GitHub-Releases-blue?style=for-the-badge&logo=github)](https://github.com/blackrose99/posify_app/releases)
+[![Descargar APK](https://img.shields.io/badge/Descargar%20APK-v1.0.0%20(Directo)-success?style=for-the-badge&logo=android&logoColor=white)](https://raw.githubusercontent.com/blackrose99/posify_app/main/apk/app-release.apk)
+[![Ver APK en Repositorio](https://img.shields.io/badge/Repositorio-Ver%20APK-blue?style=for-the-badge&logo=github)](https://github.com/blackrose99/posify_app/blob/main/apk/app-release.apk)
 [![Plataforma Android](https://img.shields.io/badge/Plataforma-Android%20%7C%20iOS%20%7C%20Escritorio-orange?style=for-the-badge&logo=flutter)](https://flutter.dev)
 [![100% Offline](https://img.shields.io/badge/Modo-100%25%20Offline%20Local-purple?style=for-the-badge&logo=sqlite)](https://sqlite.org)
 
@@ -13,20 +13,20 @@
 
 ## 📥 DESCARGA DIRECTA DE LA APK (Lista para usar)
 
-> 🚀 **¿Eres cliente o usuario final?** No necesitas compilar el código. Puedes descargar e instalar la versión lista para usar directamente en tu celular o tablet Android:
+> 🚀 **¿Eres cliente o usuario final?** No necesitas compilar el código. La APK ya está construida y subida directamente a este repositorio para que la descargues e instales con un solo toque:
 
-### 🔗 Enlaces de Descarga
+### 🔗 Enlaces de Descarga Directa
 
-| Opción | Enlace |
+| Opción | Enlace de Descarga |
 |---|---|
-| 🟢 **Descarga Directa (Recomendada)** | **[👉 Descargar app-release.apk (Última versión)](https://github.com/blackrose99/posify_app/releases/latest/download/app-release.apk)** |
-| 📦 **Todas las Versiones y Novedades** | **[📂 Ver catálogo de Releases en GitHub](https://github.com/blackrose99/posify_app/releases)** |
+| 🟢 **Descarga Inmediata (Recomendada)** | **[👉 TOCAR AQUÍ PARA DESCARGAR APK (app-release.apk)](https://raw.githubusercontent.com/blackrose99/posify_app/main/apk/app-release.apk)** |
+| 🌐 **Opción Alternativa (GitHub Web)** | **[📂 Abrir archivo en GitHub y pulsar Download](https://github.com/blackrose99/posify_app/blob/main/apk/app-release.apk)** |
 
 ---
 
 ### 📲 Cómo instalar en Android (Paso a paso)
 
-1. **Descarga el archivo**: Toca el botón verde de **[Descargar app-release.apk](https://github.com/blackrose99/posify_app/releases/latest/download/app-release.apk)** desde el navegador de tu celular o tablet.
+1. **Descarga el archivo**: Toca el botón verde de **[Descargar app-release.apk](https://raw.githubusercontent.com/blackrose99/posify_app/main/apk/app-release.apk)** desde el navegador de tu celular o tablet.
 2. **Abrir el instalador**: Cuando termine la descarga, abre el archivo desde el panel de notificaciones o desde tu carpeta de **Descargas** (administrador de archivos).
 3. **Permitir orígenes desconocidos**: Si Android te muestra una advertencia de seguridad, toca en **Ajustes** y activa la opción **"Permitir desde esta fuente"** (o "Instalar aplicaciones de fuentes desconocidas").
 4. **Instalar / Actualizar**: Confirma tocando en **Instalar** (o **Actualizar** si ya la tenías instalada). ¡Listo! Ya puedes abrir POSify.
