@@ -527,7 +527,7 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
     String medioPagoFinal = medioPago ?? '';
     if (medioPagoFinal.isEmpty && _pedidoId != null) {
       final pedRow = await _db.customSelect(
-        'SELECT COALESCE(medio_pago, "") AS medio_pago FROM pedidos WHERE id = ?',
+        "SELECT COALESCE(medio_pago, '') AS medio_pago FROM pedidos WHERE id = ?",
         variables: [Variable<int>(_pedidoId!)],
       ).getSingleOrNull();
       medioPagoFinal = (pedRow?.data['medio_pago'] as String?) ?? '';
@@ -1243,7 +1243,7 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
               } else if (value == 'ticket') {
                 _verTicketActual();
               } else if (value == 'comanda') {
-                _imprimirComandaCocina(previsualizar: true);
+                _imprimirComandaCocina();
               } else if (value == 'reabrir') {
                 _reabrirPedidoDesdeDetalle();
               }
