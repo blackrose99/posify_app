@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
 import 'package:image/image.dart' as img;
 import 'package:flutter/foundation.dart';
@@ -126,6 +125,23 @@ String _centrar(String texto, int ancho) {
 }
 
 String _linea(int ancho, [String ch = '-']) => ch * ancho;
+
+/// Codifica texto a Latin-1 de forma segura para impresoras térmicas ESC/POS,
+/// reemplazando caracteres fuera de rango (emojis, guiones tipográficos, etc.)
+/// para evitar que `latin1.encode` lance `ArgumentError` y aborte la impresión.
+List<int> _encodeEscPosText(String text) {
+  final sanitized = text
+      .replaceAll('–', '-')
+      .replaceAll('—', '-')
+      .replaceAll('’', "'")
+      .replaceAll('‘', "'")
+      .replaceAll('“', '"')
+      .replaceAll('”', '"')
+      .replaceAll('•', '*')
+      .replaceAll('…', '...');
+  final units = sanitized.codeUnits.map((c) => c <= 0xFF ? c : 0x3F).toList();
+  return units;
+}
 
 String _dosColumnas(String izquierda, String derecha, int ancho) {
   final espacio = ancho - izquierda.length - derecha.length;
@@ -363,77 +379,77 @@ List<int> buildStandardEscPosBytes(
   // 3. Encabezado centrado con texto resaltado
   bytes.addAll([0x1B, 0x61, 0x01]); // Centrado
   bytes.addAll([0x1D, 0x21, 0x11]); // Doble alto y doble ancho
-  bytes.addAll(latin1.encode('${data.nombreNegocio.toUpperCase()}\n'));
+  bytes.addAll(_encodeEscPosText('${data.nombreNegocio.toUpperCase()}\n'));
   bytes.addAll([0x1D, 0x21, 0x00]); // Tamaño estándar
-  bytes.addAll(latin1.encode('${data.tituloEstado}\n'));
-  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll(_encodeEscPosText('${data.tituloEstado}\n'));
+  bytes.addAll(_encodeEscPosText('${'=' * w}\n'));
 
   // Código de turno destacado
   bytes.addAll([0x1D, 0x21, 0x11]); // Doble tamaño
-  bytes.addAll(latin1.encode('${data.codigoTurno}\n'));
+  bytes.addAll(_encodeEscPosText('${data.codigoTurno}\n'));
   bytes.addAll([0x1D, 0x21, 0x00]); // Normal
-  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll(_encodeEscPosText('${'=' * w}\n'));
 
   // 4. Datos del pedido
   bytes.addAll([0x1B, 0x61, 0x00]); // Alineación a la izquierda
   final tipoStr = data.esDomicilio ? 'Domicilio' : 'Mesa';
-  bytes.addAll(latin1.encode('$tipoStr: ${data.referenciaONombreTipo}\n'));
+  bytes.addAll(_encodeEscPosText('$tipoStr: ${data.referenciaONombreTipo}\n'));
   if (data.cliente.trim().isNotEmpty) {
-    bytes.addAll(latin1.encode('Cliente: ${data.cliente.trim()}\n'));
+    bytes.addAll(_encodeEscPosText('Cliente: ${data.cliente.trim()}\n'));
   }
   if (data.mesero.trim().isNotEmpty) {
-    bytes.addAll(latin1.encode('Mesero: ${data.mesero.trim()}\n'));
+    bytes.addAll(_encodeEscPosText('Mesero: ${data.mesero.trim()}\n'));
   }
-  bytes.addAll(latin1.encode('Fecha: ${formatFechaTicket(data.fecha)}\n'));
-  bytes.addAll(latin1.encode('${'-' * w}\n'));
+  bytes.addAll(_encodeEscPosText('Fecha: ${formatFechaTicket(data.fecha)}\n'));
+  bytes.addAll(_encodeEscPosText('${'-' * w}\n'));
 
   // 5. Productos
   if (data.items.isEmpty) {
-    bytes.addAll(latin1.encode('${_centrar('Sin productos agregados', w)}\n'));
+    bytes.addAll(_encodeEscPosText('${_centrar('Sin productos agregados', w)}\n'));
   } else {
     for (final item in data.items) {
       bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
-      bytes.addAll(latin1.encode('${item.cantidad}x ${item.nombreProducto}\n'));
+      bytes.addAll(_encodeEscPosText('${item.cantidad}x ${item.nombreProducto}\n'));
       bytes.addAll([0x1B, 0x45, 0x00]); // Normal
       if (item.adicionales.isNotEmpty) {
-        bytes.addAll(latin1.encode('  + ${item.adicionales.join(', ')}\n'));
+        bytes.addAll(_encodeEscPosText('  + ${item.adicionales.join(', ')}\n'));
       }
       if (item.nota.trim().isNotEmpty) {
-        bytes.addAll(latin1.encode('  Nota: ${item.nota.trim()}\n'));
+        bytes.addAll(_encodeEscPosText('  Nota: ${item.nota.trim()}\n'));
       }
-      bytes.addAll(latin1.encode(
+      bytes.addAll(_encodeEscPosText(
         '${_dosColumnas('  ${formatMoney(item.precio)} c/u', formatMoney(item.subtotal), w)}\n',
       ));
     }
   }
 
   // 6. Totales
-  bytes.addAll(latin1.encode('${'-' * w}\n'));
-  bytes.addAll(latin1.encode('${_dosColumnas('Subtotal', formatMoney(data.subtotal), w)}\n'));
+  bytes.addAll(_encodeEscPosText('${'-' * w}\n'));
+  bytes.addAll(_encodeEscPosText('${_dosColumnas('Subtotal', formatMoney(data.subtotal), w)}\n'));
   if (data.domicilioCobrado > 0) {
-    bytes.addAll(latin1.encode('${_dosColumnas('Domicilio', formatMoney(data.domicilioCobrado), w)}\n'));
+    bytes.addAll(_encodeEscPosText('${_dosColumnas('Domicilio', formatMoney(data.domicilioCobrado), w)}\n'));
   }
-  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll(_encodeEscPosText('${'=' * w}\n'));
   bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
-  bytes.addAll(latin1.encode('${_dosColumnas('TOTAL', formatMoney(data.total), w)}\n'));
+  bytes.addAll(_encodeEscPosText('${_dosColumnas('TOTAL', formatMoney(data.total), w)}\n'));
   bytes.addAll([0x1B, 0x45, 0x00]); // Normal
   if (data.medioPago.trim().isNotEmpty) {
-    bytes.addAll(latin1.encode('${'-' * w}\n'));
-    bytes.addAll(latin1.encode('${_dosColumnas('Medio de pago', data.medioPago.trim(), w)}\n'));
+    bytes.addAll(_encodeEscPosText('${'-' * w}\n'));
+    bytes.addAll(_encodeEscPosText('${_dosColumnas('Medio de pago', data.medioPago.trim(), w)}\n'));
   }
   if (data.infoTransferencia.isNotEmpty) {
-    bytes.addAll(latin1.encode('${'-' * w}\n'));
+    bytes.addAll(_encodeEscPosText('${'-' * w}\n'));
     bytes.addAll([0x1B, 0x61, 0x01]); // Centrado
-    bytes.addAll(latin1.encode('PAGOS POR TRANSFERENCIA:\n'));
+    bytes.addAll(_encodeEscPosText('PAGOS POR TRANSFERENCIA:\n'));
     for (final linea in data.infoTransferencia) {
-      bytes.addAll(latin1.encode('$linea\n'));
+      bytes.addAll(_encodeEscPosText('$linea\n'));
     }
   }
-  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll(_encodeEscPosText('${'=' * w}\n'));
 
   // 7. Pie de ticket
   bytes.addAll([0x1B, 0x61, 0x01]); // Centrado
-  bytes.addAll(latin1.encode('Gracias por tu compra\n'));
+  bytes.addAll(_encodeEscPosText('Gracias por tu compra\n'));
 
   // 8. Holgura final y avance para corte seguro:
   // Avanza 8 líneas completas (~30-32 mm) asegurando que el texto supere
@@ -517,58 +533,58 @@ List<int> buildStandardEscPosCocinaBytes(
   // 3. Encabezado centrado de cocina
   bytes.addAll([0x1B, 0x61, 0x01]); // Centrado
   bytes.addAll([0x1D, 0x21, 0x11]); // Doble alto y doble ancho
-  bytes.addAll(latin1.encode('ORDEN DE COCINA\n'));
+  bytes.addAll(_encodeEscPosText('ORDEN DE COCINA\n'));
   bytes.addAll([0x1D, 0x21, 0x00]); // Normal
-  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll(_encodeEscPosText('${'=' * w}\n'));
 
   // Código de turno destacado gigante
   bytes.addAll([0x1D, 0x21, 0x11]); // Doble tamaño
-  bytes.addAll(latin1.encode('${data.codigoTurno}\n'));
+  bytes.addAll(_encodeEscPosText('${data.codigoTurno}\n'));
   bytes.addAll([0x1D, 0x21, 0x00]); // Normal
-  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll(_encodeEscPosText('${'=' * w}\n'));
 
   // 4. Datos del pedido
   bytes.addAll([0x1B, 0x61, 0x00]); // Alineación a la izquierda
   final tipoStr = data.esDomicilio ? 'Domicilio' : 'Mesa';
   bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
-  bytes.addAll(latin1.encode('$tipoStr: ${data.referenciaONombreTipo}\n'));
+  bytes.addAll(_encodeEscPosText('$tipoStr: ${data.referenciaONombreTipo}\n'));
   bytes.addAll([0x1B, 0x45, 0x00]); // Normal
   if (data.cliente.trim().isNotEmpty) {
-    bytes.addAll(latin1.encode('Cliente: ${data.cliente.trim()}\n'));
+    bytes.addAll(_encodeEscPosText('Cliente: ${data.cliente.trim()}\n'));
   }
   if (data.mesero.trim().isNotEmpty) {
-    bytes.addAll(latin1.encode('Mesero: ${data.mesero.trim()}\n'));
+    bytes.addAll(_encodeEscPosText('Mesero: ${data.mesero.trim()}\n'));
   }
-  bytes.addAll(latin1.encode('Hora: ${formatFechaTicket(data.fecha)}\n'));
-  bytes.addAll(latin1.encode('${'-' * w}\n'));
+  bytes.addAll(_encodeEscPosText('Hora: ${formatFechaTicket(data.fecha)}\n'));
+  bytes.addAll(_encodeEscPosText('${'-' * w}\n'));
 
   // 5. Productos tipo checklist de cocina
   if (data.items.isEmpty) {
-    bytes.addAll(latin1.encode('${_centrar('Sin productos agregados', w)}\n'));
+    bytes.addAll(_encodeEscPosText('${_centrar('Sin productos agregados', w)}\n'));
   } else {
     for (final item in data.items) {
       bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
-      bytes.addAll(latin1.encode('[ ] ${item.cantidad}x ${item.nombreProducto}\n'));
+      bytes.addAll(_encodeEscPosText('[ ] ${item.cantidad}x ${item.nombreProducto}\n'));
       bytes.addAll([0x1B, 0x45, 0x00]); // Normal
       if (item.adicionales.isNotEmpty) {
-        bytes.addAll(latin1.encode('    + ${item.adicionales.join(', ')}\n'));
+        bytes.addAll(_encodeEscPosText('    + ${item.adicionales.join(', ')}\n'));
       }
       if (item.nota.trim().isNotEmpty) {
         bytes.addAll([0x1B, 0x45, 0x01]);
-        bytes.addAll(latin1.encode('    * NOTA: ${item.nota.trim()}\n'));
+        bytes.addAll(_encodeEscPosText('    * NOTA: ${item.nota.trim()}\n'));
         bytes.addAll([0x1B, 0x45, 0x00]);
       }
-      bytes.addAll(latin1.encode('\n'));
+      bytes.addAll(_encodeEscPosText('\n'));
     }
   }
 
   // 6. Resumen de despacho
-  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll(_encodeEscPosText('${'=' * w}\n'));
   bytes.addAll([0x1B, 0x45, 0x01]);
-  bytes.addAll(latin1.encode('Platos/Items a despachar: ${data.totalCantidadItems}\n'));
+  bytes.addAll(_encodeEscPosText('Platos/Items a despachar: ${data.totalCantidadItems}\n'));
   bytes.addAll([0x1B, 0x45, 0x00]);
   bytes.addAll([0x1B, 0x61, 0x01]); // Centrado
-  bytes.addAll(latin1.encode('*** CONTROL DE DESPACHO ***\n'));
+  bytes.addAll(_encodeEscPosText('*** CONTROL DE DESPACHO ***\n'));
 
   // 7. Holgura final y corte seguro (8 líneas)
   bytes.addAll([0x1B, 0x64, 0x08]);
@@ -684,20 +700,20 @@ List<int> buildCalibrationTicketBytes({
   bytes.addAll([0x1B, 0x64, 0x04]); // > 1 cm de holgura inicial
   bytes.addAll([0x1B, 0x61, 0x01]); // Centro
   bytes.addAll([0x1D, 0x21, 0x11]); // Doble tamaño
-  bytes.addAll(latin1.encode('POSIFY APP\n'));
+  bytes.addAll(_encodeEscPosText('POSIFY APP\n'));
   bytes.addAll([0x1D, 0x21, 0x00]); // Normal
-  bytes.addAll(latin1.encode('CALIBRACION EXITOSA\n'));
-  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll(_encodeEscPosText('CALIBRACION EXITOSA\n'));
+  bytes.addAll(_encodeEscPosText('${'=' * w}\n'));
   bytes.addAll([0x1B, 0x61, 0x00]); // Izquierda
-  bytes.addAll(latin1.encode('Dispositivo: $deviceName\n'));
-  bytes.addAll(latin1.encode('Ancho papel: ${ancho.etiqueta}\n'));
-  bytes.addAll(latin1.encode('Holgura inicio: 1.0 cm [OK]\n'));
-  bytes.addAll(latin1.encode('Holgura corte:  1.5 cm [OK]\n'));
-  bytes.addAll(latin1.encode('Estado: Sincronizada\n'));
-  bytes.addAll(latin1.encode('${'=' * w}\n'));
+  bytes.addAll(_encodeEscPosText('Dispositivo: $deviceName\n'));
+  bytes.addAll(_encodeEscPosText('Ancho papel: ${ancho.etiqueta}\n'));
+  bytes.addAll(_encodeEscPosText('Holgura inicio: 1.0 cm [OK]\n'));
+  bytes.addAll(_encodeEscPosText('Holgura corte:  1.5 cm [OK]\n'));
+  bytes.addAll(_encodeEscPosText('Estado: Sincronizada\n'));
+  bytes.addAll(_encodeEscPosText('${'=' * w}\n'));
   bytes.addAll([0x1B, 0x61, 0x01]); // Centro
   bytes.addAll([0x1B, 0x45, 0x01]); // Negrita
-  bytes.addAll(latin1.encode('*** LISTA PARA FACTURAR ***\n'));
+  bytes.addAll(_encodeEscPosText('*** LISTA PARA FACTURAR ***\n'));
   bytes.addAll([0x1B, 0x45, 0x00]);
   bytes.addAll([0x1B, 0x64, 0x08]); // 8 líneas de avance para corte limpio con holgura
 

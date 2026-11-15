@@ -300,6 +300,17 @@ class _TicketPreviewScreenState extends State<TicketPreviewScreen> {
         );
         await _imprimirConSistema(confirmado: true);
       }
+    } catch (e) {
+      debugPrint('Error al imprimir en térmica: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Error al enviar a la impresora térmica. Se abrirá la impresión del sistema.',
+          ),
+        ),
+      );
+      await _imprimirConSistema(confirmado: true);
     } finally {
       if (mounted) setState(() => _accionEnCurso = false);
     }

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/constants/app_colors.dart';
@@ -24,6 +25,10 @@ class AdminConfigScreen extends StatefulWidget {
 }
 
 class _AdminConfigScreenState extends State<AdminConfigScreen> {
+  static const MethodChannel _systemChannel =
+      MethodChannel('com.example.barril_app/system');
+  static const String _repoUrl = 'https://github.com/blackrose99/posify_app';
+
   final AppDatabase _db = sl<AppDatabase>();
   late final DataBackupService _backupService = DataBackupService(_db);
 
@@ -134,6 +139,84 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
     }
   }
 
+  Future<void> _abrirRepositorioActualizacion() async {
+    try {
+      await _systemChannel.invokeMethod<bool>('openUrl', {'url': _repoUrl});
+    } catch (_) {
+      await Clipboard.setData(const ClipboardData(text: _repoUrl));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se pudo abrir el navegador. Enlace copiado al portapapeles.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _mostrarDialogoActualizacion() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.system_update_rounded, color: AppColors.primary),
+            SizedBox(width: 10),
+            Expanded(child: Text('Actualizar POSify')),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Puedes descargar la última versión (APK) directamente desde el repositorio oficial de GitHub:',
+            ),
+            SizedBox(height: 10),
+            SelectableText(
+              _repoUrl,
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: AppColors.primary,
+                fontSize: 13,
+              ),
+            ),
+            SizedBox(height: 12),
+            Text(
+              'Importante: NO desinstales la app actual. Instala la nueva APK encima para conservar tus productos, mesas e historial.',
+              style: TextStyle(fontSize: 12.5, color: AppColors.textMuted),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(const ClipboardData(text: _repoUrl));
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Enlace copiado al portapapeles.')),
+              );
+            },
+            icon: const Icon(Icons.copy_rounded, size: 18),
+            label: const Text('Copiar enlace'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _abrirRepositorioActualizacion();
+            },
+            icon: const Icon(Icons.open_in_new_rounded, size: 18),
+            label: const Text('Ir a descargar'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _restaurarRespaldo() async {
     if (_backupRunning) return;
 
@@ -186,6 +269,84 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
     } finally {
       if (mounted) setState(() => _backupRunning = false);
     }
+  }
+
+  Future<void> _abrirRepositorioActualizacion() async {
+    try {
+      await _systemChannel.invokeMethod<bool>('openUrl', {'url': _repoUrl});
+    } catch (_) {
+      await Clipboard.setData(const ClipboardData(text: _repoUrl));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se pudo abrir el navegador. Enlace copiado al portapapeles.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _mostrarDialogoActualizacion() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.system_update_rounded, color: AppColors.primary),
+            SizedBox(width: 10),
+            Expanded(child: Text('Actualizar POSify')),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Puedes descargar la última versión (APK) directamente desde el repositorio oficial de GitHub:',
+            ),
+            SizedBox(height: 10),
+            SelectableText(
+              _repoUrl,
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: AppColors.primary,
+                fontSize: 13,
+              ),
+            ),
+            SizedBox(height: 12),
+            Text(
+              'Importante: NO desinstales la app actual. Instala la nueva APK encima para conservar tus productos, mesas e historial.',
+              style: TextStyle(fontSize: 12.5, color: AppColors.textMuted),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(const ClipboardData(text: _repoUrl));
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Enlace copiado al portapapeles.')),
+              );
+            },
+            icon: const Icon(Icons.copy_rounded, size: 18),
+            label: const Text('Copiar enlace'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _abrirRepositorioActualizacion();
+            },
+            icon: const Icon(Icons.open_in_new_rounded, size: 18),
+            label: const Text('Ir a descargar'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -344,6 +505,21 @@ class _AdminConfigScreenState extends State<AdminConfigScreen> {
                         builder: (_) => const ConfigMeserosScreen(),
                       ),
                     ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(
+                      Icons.system_update_rounded,
+                      color: AppColors.primary,
+                    ),
+                    title: const Text('Actualizar aplicación'),
+                    subtitle: const Text(
+                      'Ir al repositorio para descargar la nueva versión',
+                    ),
+                    trailing: const Icon(Icons.open_in_new_rounded),
+                    onTap: _mostrarDialogoActualizacion,
                   ),
                 ),
               ],

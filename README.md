@@ -48,6 +48,14 @@
 
 ## 🌟 Novedades y Características Recientes
 
+### 🍳 Corrección en Impresión de Comanda de Cocina y Conexión Bluetooth
+- **Comanda de cocina independiente**: Se corrigió la impresión directa de la **Orden de Cocina** (ticket exclusivo para cocina con código de turno, mesa/domicilio, listado de productos con casillas `[ ]`, adicionales y notas, sin precios ni datos de cobro).
+- **Codificación segura ESC/POS**: Se sanitizan caracteres especiales fuera de Latin-1 en productos, notas o adicionales para evitar fallos silenciosos al generar los bytes de impresión.
+- **Conexión Bluetooth Classic (SPP) priorizada**: Se optimizó `BluetoothPrinterService` para intentar primero la conexión SPP en impresoras térmicas estándar antes de intentar BLE GATT, evitando tiempos muertos al imprimir comandas directamente.
+
+### 🔄 Actualización Directa desde Ajustes
+- Se agregó la opción **Actualizar aplicación** en **Configuración administrativa**, con acceso directo al repositorio oficial ([https://github.com/blackrose99/posify_app](https://github.com/blackrose99/posify_app)) para descargar la nueva APK sin perder los datos locales.
+
 ### 💳 Medios de Pago Parametrizables
 - **Configuración centralizada**: Administra qué métodos de pago acepta tu negocio desde el panel de configuración (**Configuración** ➔ **Medios de Pago**).
 - **Efectivo y Transferencias**: Activa o desactiva pagos en efectivo y transferencias electrónicas.

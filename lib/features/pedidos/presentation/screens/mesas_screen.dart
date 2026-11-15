@@ -1149,7 +1149,7 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
     final anchoRaw = await _leerConfig('printer_paper_width', fallback: '32');
     final ancho = AnchoPapelX.desdeCaracteres(int.tryParse(anchoRaw) ?? 32);
 
-    if (printerId.isEmpty) {
+    if (printerId.trim().isEmpty) {
       if (!mounted) return;
       await Navigator.push(
         context,
@@ -1218,8 +1218,15 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
         );
         await _cargarDatos();
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Error al imprimir comanda cocina: $e');
       if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Ocurrió un error al imprimir la comanda. Abriendo vista previa...'),
+        ),
+      );
       await Navigator.push(
         context,
         MaterialPageRoute(

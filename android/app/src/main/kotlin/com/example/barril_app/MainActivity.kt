@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -68,6 +69,30 @@ class MainActivity : FlutterActivity() {
                         call.argument("bytes"),
                         result
                     )
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.barril_app/system")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "openUrl" -> {
+                        val url = call.argument<String>("url")
+                        if (url.isNullOrBlank()) {
+                            result.error("INVALID_URL", "URL vacía", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error abriendo URL $url", e)
+                            result.error("OPEN_URL_ERROR", e.message, null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }

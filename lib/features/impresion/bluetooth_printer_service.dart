@@ -177,35 +177,44 @@ class BluetoothPrinterService {
 
   /// Reconstruye un [BluetoothDevice] a partir de un remoteId guardado y abre la conexión serie persistente.
   Future<BluetoothDevice?> connect(String remoteId) async {
-    if (remoteId.trim().isEmpty) return null;
+    final cleanId = remoteId.trim();
+    if (cleanId.isEmpty) return null;
     try {
-      final device = BluetoothDevice.fromId(remoteId);
+      final device = BluetoothDevice.fromId(cleanId);
+      final esExplicitoBle = cleanId.toUpperCase().contains('BLE');
 
-      // Conexión BLE rápida con timeout controlado
+      // 1. En Android, intentar primero Bluetooth Classic SPP (evita bloqueos por BLE GATT)
+      if (Platform.isAndroid && !esExplicitoBle) {
+        try {
+          final okSpp = await _channel
+              .invokeMethod<bool>('connectPrinter', {'address': cleanId})
+              .timeout(const Duration(seconds: 8), onTimeout: () => false);
+          if (okSpp == true) {
+            return device;
+          }
+        } catch (e) {
+          debugPrint('Aviso SPP connect para $cleanId: $e');
+        }
+      }
+
+      // 2. Fallback o conexión explícita BLE
       try {
         if (!device.isConnected) {
-          await device.connect(timeout: const Duration(seconds: 4), autoConnect: false);
+          await device.connect(
+            timeout: const Duration(seconds: 4),
+            autoConnect: false,
+          );
           try {
             await device.requestMtu(512);
           } catch (_) {}
         }
       } catch (e) {
-        debugPrint('Aviso BLE connect para $remoteId: $e');
-      }
-
-      // Conexión Classic SPP nativa en Android con timeout de seguridad (no bloquea la UI)
-      if (Platform.isAndroid && !remoteId.toUpperCase().contains('BLE')) {
-        try {
-          await _channel.invokeMethod<bool>('connectPrinter', {'address': remoteId}).timeout(
-            const Duration(seconds: 4),
-            onTimeout: () => false,
-          );
-        } catch (_) {}
+        debugPrint('Aviso BLE connect para $cleanId: $e');
       }
 
       return device;
     } catch (e) {
-      debugPrint('Error obteniendo dispositivo $remoteId: $e');
+      debugPrint('Error obteniendo dispositivo $cleanId: $e');
       return null;
     }
   }
@@ -252,7 +261,7 @@ class BluetoothPrinterService {
         final bool? exitoSpp = await _channel.invokeMethod<bool>('printViaClassicSpp', {
           'address': address,
           'bytes': Uint8List.fromList(bytes),
-        }).timeout(const Duration(seconds: 4), onTimeout: () => false);
+        }).timeout(const Duration(seconds: 10), onTimeout: () => false);
         if (exitoSpp == true) {
           debugPrint('¡Impresión por Bluetooth Classic (SPP) exitosa!');
           return true;

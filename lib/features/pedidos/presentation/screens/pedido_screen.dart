@@ -496,8 +496,15 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
         );
         await _inicializar();
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Error al imprimir comanda cocina: $e');
       if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Ocurrió un error al imprimir la comanda. Abriendo vista previa...'),
+        ),
+      );
       await Navigator.push(
         context,
         MaterialPageRoute(
