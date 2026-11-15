@@ -1162,7 +1162,10 @@ class _PedidoScreenState extends ConsumerState<PedidoScreen> {
               await _eliminarItem(item);
               setLocalState(() {});
             },
-            onImprimirComandaCocina: _imprimirComandaCocina,
+            onImprimirComandaCocina: () {
+              Navigator.pop(sheetContext);
+              _imprimirComandaCocina();
+            },
             onCerrarPedido: () {
               Navigator.pop(sheetContext);
               _cerrarPedidoDesdeDetalle();
