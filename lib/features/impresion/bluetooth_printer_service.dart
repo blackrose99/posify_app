@@ -30,6 +30,10 @@ class DiscoveredPrinter {
 class BluetoothPrinterService {
   const BluetoothPrinterService();
 
+  /// Caché en memoria de direcciones confirmadas como BLE GATT para ir directo
+  /// sin intentar abrir un socket Classic RFCOMM (evita el diálogo "¿Vincular con ...?").
+  static final Set<String> _knownBleAddresses = <String>{};
+
   /// Solicita los permisos necesarios en Android/iOS para Bluetooth y Ubicación.
   Future<bool> requestPermissions() async {
     if (Platform.isAndroid) {
@@ -65,6 +69,31 @@ class BluetoothPrinterService {
       debugPrint('Error verificando estado de Bluetooth: $e');
       return false;
     }
+  }
+
+  /// Verifica si [address] está vinculada en Android por Bluetooth Classic (y no es un dispositivo _BLE).
+  Future<bool> _isBondedClassicInAndroid(String address) async {
+    if (!Platform.isAndroid || address.trim().isEmpty) return false;
+    final clean = address.trim().toUpperCase();
+    if (clean.contains('BLE') || _knownBleAddresses.contains(clean)) {
+      return false;
+    }
+    try {
+      final List<dynamic>? bondedNative =
+          await _channel.invokeMethod<List<dynamic>>('getBondedDevices');
+      if (bondedNative == null) return false;
+      for (final item in bondedNative) {
+        if (item is Map) {
+          final addr = ((item['address'] as String?) ?? '').trim().toUpperCase();
+          final name = ((item['name'] as String?) ?? '').trim().toUpperCase();
+          if (addr == clean) {
+            if (name.contains('BLE')) return false;
+            return true;
+          }
+        }
+      }
+    } catch (_) {}
+    return false;
   }
 
   /// Escanea dispositivos BLE cercanos y obtiene dispositivos ya vinculados (bonded) en el sistema.
@@ -138,6 +167,9 @@ class BluetoothPrinterService {
         }
 
         final id = r.device.remoteId.str;
+        if (nombre.toUpperCase().contains('BLE')) {
+          _knownBleAddresses.add(id.toUpperCase());
+        }
         final yaExiste = mapaDispositivos[id];
 
         // Omitir duplicados _BLE si ya tenemos el dispositivo vinculado nativo
@@ -175,42 +207,41 @@ class BluetoothPrinterService {
     return lista;
   }
 
-  /// Reconstruye un [BluetoothDevice] a partir de un remoteId guardado y abre la conexión serie persistente.
+  /// Reconstruye un [BluetoothDevice] a partir de un remoteId guardado y abre la conexión persistente.
   Future<BluetoothDevice?> connect(String remoteId) async {
     final cleanId = remoteId.trim();
     if (cleanId.isEmpty) return null;
     try {
       final device = BluetoothDevice.fromId(cleanId);
-      final esExplicitoBle = cleanId.toUpperCase().contains('BLE');
+      final esClassicBonded = await _isBondedClassicInAndroid(cleanId);
 
-      // 1. En Android, intentar primero Bluetooth Classic SPP (evita bloqueos por BLE GATT)
-      if (Platform.isAndroid && !esExplicitoBle) {
+      // 1. Si está vinculada en Android como Bluetooth Classic SPP, abrir socket SPP
+      if (esClassicBonded) {
         try {
           final okSpp = await _channel
               .invokeMethod<bool>('connectPrinter', {'address': cleanId})
-              .timeout(const Duration(seconds: 15), onTimeout: () => false);
+              .timeout(const Duration(seconds: 5), onTimeout: () => false);
           if (okSpp == true) {
             return device;
           }
         } catch (e) {
           debugPrint('Aviso SPP connect para $cleanId: $e');
         }
-
-        // En Android con impresora Classic nunca se abre BLE GATT (dispara "¿Vincular?").
-        return device;
       }
 
-      // 2. Fallback o conexión explícita BLE
+      // 2. Conexión BLE GATT directa (para Printer_BBBB_BLE y cualquier impresora BLE
+      // sin disparar el diálogo de vinculación Classic de Android)
       try {
         if (!device.isConnected) {
           await device.connect(
-            timeout: const Duration(seconds: 4),
+            timeout: const Duration(seconds: 6),
             autoConnect: false,
           );
           try {
             await device.requestMtu(512);
           } catch (_) {}
         }
+        _knownBleAddresses.add(cleanId.toUpperCase());
       } catch (e) {
         debugPrint('Aviso BLE connect para $cleanId: $e');
       }
@@ -222,12 +253,12 @@ class BluetoothPrinterService {
     }
   }
 
-  /// Consulta si la impresora seleccionada tiene un socket activo (luz azul fija).
+  /// Consulta si la impresora seleccionada tiene conexión activa (BLE o SPP).
   Future<bool> isConnected(String remoteId) async {
     if (remoteId.trim().isEmpty) return false;
     final device = BluetoothDevice.fromId(remoteId);
     if (device.isConnected) return true;
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid && await _isBondedClassicInAndroid(remoteId)) {
       try {
         final bool? res = await _channel.invokeMethod<bool>('isConnected', {'address': remoteId});
         return res ?? false;
@@ -247,112 +278,113 @@ class BluetoothPrinterService {
     }
   }
 
-  /// Envía los [bytes] de impresión a la impresora. Intenta primero vía
-  /// Bluetooth Classic (SPP socket RFCOMM) y si no aplica o falla, usa BLE GATT.
+  /// Envía los [bytes] de impresión a la impresora.
+  /// - Si la impresora está vinculada en Android Classic SPP, usa SPP y si falla cae a BLE GATT.
+  /// - Si NO está vinculada en Classic (ej. Printer_BBBB_BLE), va directo por BLE GATT sin tocar
+  ///   el socket Classic (así nunca aparece "¿Vincular con Printer_BC01?").
   Future<bool> printBytes(BluetoothDevice device, List<int> bytes) async {
-    final address = device.remoteId.str;
+    final address = device.remoteId.str.trim();
 
-    // 1. Si la dirección es explícitamente BLE o no es bonded nativo, ir directo a BLE
-    if (address.toUpperCase().contains('BLE')) {
-      return _printBytesBle(device, bytes);
-    }
-
-    // 2. Intentar impresión por Bluetooth Classic (SPP) si estamos en Android.
-    // Se reintenta una vez (el socket puede haber quedado obsoleto) y NUNCA se cae
-    // a BLE GATT: abrir GATT hace que Android muestre "¿Vincular con ...?" en cada impresión.
-    if (Platform.isAndroid && address.isNotEmpty) {
-      for (var intento = 0; intento < 2; intento++) {
-        try {
-          debugPrint('Imprimiendo vía Bluetooth Classic (SPP) en $address (intento ${intento + 1})...');
-          final bool? exitoSpp = await _channel.invokeMethod<bool>('printViaClassicSpp', {
-            'address': address,
-            'bytes': Uint8List.fromList(bytes),
-          }).timeout(const Duration(seconds: 15), onTimeout: () => false);
-          if (exitoSpp == true) {
-            return true;
-          }
-        } catch (e) {
-          debugPrint('Falló impresión SPP Classic: $e');
+    if (Platform.isAndroid && address.isNotEmpty && await _isBondedClassicInAndroid(address)) {
+      try {
+        debugPrint('Intentando imprimir vía Bluetooth Classic (SPP) en $address...');
+        final bool? exitoSpp = await _channel.invokeMethod<bool>('printViaClassicSpp', {
+          'address': address,
+          'bytes': Uint8List.fromList(bytes),
+        }).timeout(const Duration(seconds: 8), onTimeout: () => false);
+        if (exitoSpp == true) {
+          debugPrint('¡Impresión por Bluetooth Classic (SPP) exitosa!');
+          return true;
         }
-        await Future.delayed(const Duration(milliseconds: 600));
+      } catch (e) {
+        debugPrint('Falló impresión SPP Classic, intentando BLE GATT: $e');
       }
-      return false;
     }
 
-    // 3. Otras plataformas: BLE GATT
-    return _printBytesBle(device, bytes);
+    // Impresión directa por BLE GATT (con reintento automático si se desconectó en reposo)
+    final okBle = await _printBytesBle(device, bytes);
+    if (okBle && address.isNotEmpty) {
+      _knownBleAddresses.add(address.toUpperCase());
+    }
+    return okBle;
   }
 
   Future<bool> _printBytesBle(BluetoothDevice device, List<int> bytes) async {
-    try {
-      if (!device.isConnected) {
-        await device.connect(timeout: const Duration(seconds: 5), autoConnect: false);
-        try {
-          await device.requestMtu(512);
-        } catch (_) {}
-      }
-
-      final servicios = await device.discoverServices();
-      BluetoothCharacteristic? writable;
-
-      // Prioridad 1: Características estándar conocidas de impresoras térmicas BLE
-      // 0000fff1 (JieLi/ZhuHai POS-58), 49535343-8841 (ISSC Transparent UART), 0000ff02, 0000ff13
-      for (final s in servicios) {
-        for (final c in s.characteristics) {
-          final uuid = c.uuid.str.toLowerCase();
-          if (uuid.contains('fff1') || uuid.contains('49535343-8841') || uuid.contains('ff02') || uuid.contains('ff13')) {
-            if (c.properties.write || c.properties.writeWithoutResponse) {
-              writable = c;
-              break;
-            }
-          }
+    for (int intento = 0; intento < 2; intento++) {
+      try {
+        if (!device.isConnected) {
+          await device.connect(timeout: const Duration(seconds: 6), autoConnect: false);
+          try {
+            await device.requestMtu(512);
+          } catch (_) {}
         }
-        if (writable != null) break;
-      }
 
-      // Prioridad 2: Cualquier característica con capacidad de escritura
-      if (writable == null) {
+        final servicios = await device.discoverServices();
+        BluetoothCharacteristic? writable;
+
+        // Prioridad 1: Características estándar conocidas de impresoras térmicas BLE
         for (final s in servicios) {
           for (final c in s.characteristics) {
-            if (c.properties.write || c.properties.writeWithoutResponse) {
-              writable = c;
-              break;
+            final uuid = c.uuid.str.toLowerCase();
+            if (uuid.contains('fff1') ||
+                uuid.contains('49535343-8841') ||
+                uuid.contains('ff02') ||
+                uuid.contains('ff13')) {
+              if (c.properties.write || c.properties.writeWithoutResponse) {
+                writable = c;
+                break;
+              }
             }
           }
           if (writable != null) break;
         }
-      }
 
-      if (writable == null) {
-        debugPrint('No se encontró característica de escritura BLE en ${device.platformName}');
-        return false;
-      }
-
-      int maxChunk = 20;
-      try {
-        final mtu = device.mtuNow;
-        if (mtu > 3) {
-          maxChunk = (mtu - 3).clamp(20, 180);
+        // Prioridad 2: Cualquier característica con capacidad de escritura
+        if (writable == null) {
+          for (final s in servicios) {
+            for (final c in s.characteristics) {
+              if (c.properties.write || c.properties.writeWithoutResponse) {
+                writable = c;
+                break;
+              }
+            }
+            if (writable != null) break;
+          }
         }
-      } catch (_) {
-        maxChunk = 20;
+
+        if (writable == null) {
+          debugPrint('No se encontró característica de escritura BLE en ${device.platformName}');
+          return false;
+        }
+
+        int maxChunk = 20;
+        try {
+          final mtu = device.mtuNow;
+          if (mtu > 3) {
+            maxChunk = (mtu - 3).clamp(20, 180);
+          }
+        } catch (_) {
+          maxChunk = 20;
+        }
+
+        final bool withoutResponse = writable.properties.writeWithoutResponse;
+
+        for (int i = 0; i < bytes.length; i += maxChunk) {
+          final fin = (i + maxChunk < bytes.length) ? i + maxChunk : bytes.length;
+          final chunk = bytes.sublist(i, fin);
+          await writable.write(chunk, withoutResponse: withoutResponse);
+          await Future.delayed(const Duration(milliseconds: 20));
+        }
+
+        return true;
+      } catch (e, stack) {
+        debugPrint('Error al imprimir por BLE (intento ${intento + 1}): $e\n$stack');
+        try {
+          await device.disconnect();
+        } catch (_) {}
+        await Future.delayed(const Duration(milliseconds: 300));
       }
-
-      final bool withoutResponse = writable.properties.writeWithoutResponse;
-
-      for (int i = 0; i < bytes.length; i += maxChunk) {
-        final fin = (i + maxChunk < bytes.length) ? i + maxChunk : bytes.length;
-        final chunk = bytes.sublist(i, fin);
-        await writable.write(chunk, withoutResponse: withoutResponse);
-        await Future.delayed(const Duration(milliseconds: 20));
-      }
-
-      return true;
-    } catch (e, stack) {
-      debugPrint('Error al imprimir por BLE: $e\n$stack');
-      return false;
     }
+    return false;
   }
 }
-
-
