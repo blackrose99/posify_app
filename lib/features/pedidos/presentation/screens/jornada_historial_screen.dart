@@ -570,9 +570,9 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Eliminar jornada'),
+        title: const Text('Confirmación 1 de 2: Eliminar jornada'),
         content: Text(
-          '¿Estás seguro de eliminar la "${widget.jornadaNombre}"? Esta acción borrará permanentemente la jornada y todos sus pedidos e ítems asociados.',
+          '¿Estás seguro de eliminar la "${widget.jornadaNombre}"? Esta acción borrará permanentemente el informe de ventas, la jornada y todos sus pedidos asociados.',
         ),
         actions: [
           TextButton(
@@ -582,13 +582,68 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Sí, eliminar'),
+            child: const Text('Continuar'),
           ),
         ],
       ),
     );
 
-    if (confirmar != true) return;
+    if (confirmar != true || !mounted) return;
+
+    final pinCtrl = TextEditingController();
+    String? errorPin;
+    final autorizado = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setLocalState) => AlertDialog(
+          title: const Text('Confirmación 2 de 2: PIN de seguridad'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Ingresa el PIN de administrador para desbloquear y eliminar definitivamente "${widget.jornadaNombre}":',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: pinCtrl,
+                obscureText: true,
+                autofocus: true,
+                maxLength: 4,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: 'PIN de seguridad',
+                  errorText: errorPin,
+                  prefixIcon: const Icon(Icons.lock_outline),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+              onPressed: () {
+                if (pinCtrl.text.trim() == '0000') {
+                  Navigator.pop(dialogContext, true);
+                } else {
+                  setLocalState(() {
+                    errorPin = 'PIN incorrecto. No autorizado.';
+                  });
+                }
+              },
+              child: const Text('Desbloquear y eliminar'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (autorizado != true) return;
 
     await _db.transaction(() async {
       await _db.customStatement(
