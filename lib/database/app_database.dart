@@ -80,6 +80,7 @@ class AppDatabase extends _$AppDatabase {
       'ALTER TABLE pedidos ADD COLUMN impreso_cocina INTEGER NOT NULL DEFAULT 0',
       "ALTER TABLE pedidos ADD COLUMN medio_pago TEXT NOT NULL DEFAULT ''",
       'ALTER TABLE items_pedido ADD COLUMN entregado INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE productos ADD COLUMN costo REAL',
     ]) {
       try {
         await customStatement(colSql);

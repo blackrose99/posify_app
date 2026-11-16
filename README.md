@@ -48,6 +48,14 @@
 
 ## 🌟 Novedades y Características Recientes
 
+### 📊 Apoyo Estadístico, Rotación y Predicción por Día
+- **Análisis histórico por rango**: Filtra jornadas cerradas por **Hoy**, **Semana**, **Mes**, **Últimos 3 Meses (90 días)** o **Todo**, tanto desde el listado general de jornadas como desde el detalle de una jornada específica.
+- **Predicción para días específicos**: Filtra por día de la semana (**Lun a Dom**) para conocer la rotación real de cada plato en días clave (ej. solo miércoles o solo domingos) y obtener la cantidad sugerida a preparar (**Promedio exacto**, **+10% respaldo**, **+20% respaldo** o **Pico máximo histórico**) con rango mínimo–máximo por producto.
+
+### 💰 Costo Opcional, Margen de Ganancia y Ganancia Real
+- **Costo por producto (opcional)**: En **Configuración ➔ Productos**, puedes ingresar cuánto cuesta preparar cada plato para visualizar al instante su ganancia unitaria y porcentaje de margen.
+- **Ganancia real en informes**: Los informes de jornada individual, el resumen estadístico de rotación y el archivo TXT exportable muestran automáticamente el costo total y la **ganancia real** generada.
+
 ### 🍳 Corrección en Impresión de Comanda de Cocina y Conexión Bluetooth
 - **Comanda de cocina independiente**: Se corrigió la impresión directa de la **Orden de Cocina** (ticket exclusivo para cocina con código de turno, mesa/domicilio, listado de productos con casillas `[ ]`, adicionales y notas, sin precios ni datos de cobro).
 - **Codificación segura ESC/POS**: Se sanitizan caracteres especiales fuera de Latin-1 en productos, notas o adicionales para evitar fallos silenciosos al generar los bytes de impresión.

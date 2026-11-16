@@ -20,6 +20,7 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
   String _query = '';
   List<Categoria> _categorias = const [];
   List<Producto> _productos = const [];
+  Map<int, double?> _costosPorProducto = const {};
 
   @override
   void initState() {
@@ -42,12 +43,73 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
           ]))
         .get();
 
+    final costosRows = await _db.customSelect(
+      'SELECT id, costo FROM productos WHERE activo = 1',
+    ).get();
+    final costos = <int, double?>{};
+    for (final row in costosRows) {
+      final id = row.data['id'] as int?;
+      final costo = (row.data['costo'] as num?)?.toDouble();
+      if (id != null) {
+        costos[id] = costo;
+      }
+    }
+
     if (!mounted) return;
     setState(() {
       _categorias = categorias;
       _productos = productos;
+      _costosPorProducto = costos;
       _loading = false;
     });
+  }
+
+  Widget _buildMargenPreview(String precioText, String costoText) {
+    final precio = double.tryParse(precioText.trim());
+    final costo = costoText.trim().isEmpty
+        ? null
+        : double.tryParse(costoText.trim());
+
+    if (costo == null) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 8),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'Costo opcional: si lo ingresas, verás la ganancia y margen real en informes.',
+            style: TextStyle(fontSize: 11.5, color: AppColors.textMuted),
+          ),
+        ),
+      );
+    }
+
+    if (precio == null || precio <= 0 || costo < 0) {
+      return const SizedBox.shrink();
+    }
+
+    final ganancia = precio - costo;
+    final margenPct = (ganancia / precio) * 100;
+    final esPositivo = ganancia >= 0;
+    final color = esPositivo ? AppColors.success : AppColors.error;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Text(
+        'Ganancia: ${formatMoney(ganancia)} · Margen: ${margenPct.toStringAsFixed(1)}%',
+        style: TextStyle(
+          fontSize: 12.5,
+          fontWeight: FontWeight.w700,
+          color: color,
+        ),
+      ),
+    );
   }
 
   Future<void> _crearProducto() async {
@@ -62,6 +124,7 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
     final nombreCtrl = TextEditingController();
     final descripcionCtrl = TextEditingController();
     final precioCtrl = TextEditingController();
+    final costoCtrl = TextEditingController();
 
     final ok = await showDialog<bool>(
       context: context,
@@ -73,7 +136,7 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 DropdownButtonFormField<int>(
-                  value: categoriaId,
+                  initialValue: categoriaId,
                   decoration: const InputDecoration(labelText: 'Categoria'),
                   items: _categorias
                       .map((c) =>
@@ -98,8 +161,20 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
                 TextField(
                   controller: precioCtrl,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Precio'),
+                  decoration: const InputDecoration(labelText: 'Precio de venta'),
+                  onChanged: (_) => setLocalState(() {}),
                 ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: costoCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Costo de preparacion (opcional)',
+                    hintText: 'Ej: 18000',
+                  ),
+                  onChanged: (_) => setLocalState(() {}),
+                ),
+                _buildMargenPreview(precioCtrl.text, costoCtrl.text),
               ],
             ),
           ),
@@ -121,9 +196,11 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
 
     final nombre = nombreCtrl.text.trim();
     final precio = double.tryParse(precioCtrl.text.trim());
+    final costoText = costoCtrl.text.trim();
+    final costo = costoText.isEmpty ? null : double.tryParse(costoText);
     if (nombre.isEmpty || precio == null || precio <= 0) return;
 
-    await _db.into(_db.productos).insert(
+    final nuevoId = await _db.into(_db.productos).insert(
           ProductosCompanion.insert(
             categoriaId: categoriaId,
             nombre: nombre,
@@ -131,6 +208,13 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
             precio: precio,
           ),
         );
+
+    if (costo != null && costo >= 0) {
+      await _db.customStatement(
+        'UPDATE productos SET costo = ? WHERE id = ?',
+        [costo, nuevoId],
+      );
+    }
 
     await _cargar();
   }
@@ -141,6 +225,10 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
     final descripcionCtrl = TextEditingController(text: producto.descripcion);
     final precioCtrl =
         TextEditingController(text: producto.precio.toStringAsFixed(0));
+    final costoActual = _costosPorProducto[producto.id];
+    final costoCtrl = TextEditingController(
+      text: costoActual != null ? costoActual.toStringAsFixed(0) : '',
+    );
 
     final ok = await showDialog<bool>(
       context: context,
@@ -152,7 +240,7 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 DropdownButtonFormField<int>(
-                  value: categoriaId,
+                  initialValue: categoriaId,
                   decoration: const InputDecoration(labelText: 'Categoria'),
                   items: _categorias
                       .map((c) =>
@@ -177,8 +265,20 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
                 TextField(
                   controller: precioCtrl,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Precio'),
+                  decoration: const InputDecoration(labelText: 'Precio de venta'),
+                  onChanged: (_) => setLocalState(() {}),
                 ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: costoCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Costo de preparacion (opcional)',
+                    hintText: 'Vacio para no calcular costo',
+                  ),
+                  onChanged: (_) => setLocalState(() {}),
+                ),
+                _buildMargenPreview(precioCtrl.text, costoCtrl.text),
               ],
             ),
           ),
@@ -200,6 +300,8 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
 
     final nombre = nombreCtrl.text.trim();
     final precio = double.tryParse(precioCtrl.text.trim());
+    final costoText = costoCtrl.text.trim();
+    final costo = costoText.isEmpty ? null : double.tryParse(costoText);
     if (nombre.isEmpty || precio == null || precio <= 0) return;
 
     await (_db.update(_db.productos)..where((p) => p.id.equals(producto.id)))
@@ -210,6 +312,11 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
         descripcion: drift.Value(descripcionCtrl.text.trim()),
         precio: drift.Value(precio),
       ),
+    );
+
+    await _db.customStatement(
+      'UPDATE productos SET costo = ? WHERE id = ?',
+      [costo != null && costo >= 0 ? costo : null, producto.id],
     );
 
     await _cargar();
@@ -310,11 +417,38 @@ class _ConfigProductosScreenState extends State<ConfigProductosScreen> {
                                   ),
                                 )
                                 .nombre;
+                            final costo = _costosPorProducto[p.id];
+                            final ganancia =
+                                costo != null ? (p.precio - costo) : null;
+                            final margenPct = (ganancia != null && p.precio > 0)
+                                ? (ganancia / p.precio) * 100
+                                : null;
+
                             return Card(
                               child: ListTile(
                                 title: Text(p.nombre),
-                                subtitle:
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
                                     Text('$cat · ${formatMoney(p.precio)}'),
+                                    if (costo != null &&
+                                        ganancia != null &&
+                                        margenPct != null)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: Text(
+                                          'Costo: ${formatMoney(costo)} · Ganancia: ${formatMoney(ganancia)} (${margenPct.toStringAsFixed(1)}%)',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                            color: ganancia >= 0
+                                                ? AppColors.success
+                                                : AppColors.error,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
                                 trailing: Wrap(
                                   spacing: 4,
                                   children: [

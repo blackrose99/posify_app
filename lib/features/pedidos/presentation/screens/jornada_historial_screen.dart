@@ -17,6 +17,7 @@ import '../../../../injection_container.dart';
 import '../../../impresion/bluetooth_printer_service.dart';
 import '../../../impresion/ticket_data.dart';
 import '../../domain/entities/item_pedido.dart';
+import 'jornada_estadisticas_screen.dart';
 import 'ticket_preview_screen.dart';
 
 String _formatMoney(num value) => formatMoney(value);
@@ -43,6 +44,7 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
   String _query = '';
   List<_PedidoHistorial> _pedidos = const [];
   _ResumenVentas _resumen = const _ResumenVentas();
+  int? _jornadaDiaSemana;
 
   Future<String> _leerConfig(String clave, {String fallback = ''}) async {
     final row = await (_db.select(_db.configuracion)
@@ -166,9 +168,47 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
       }
     }
 
+    final jornadaMeta = await _db.customSelect(
+      'SELECT abierta_en, cerrada_en FROM jornadas WHERE id = ? LIMIT 1',
+      variables: [Variable<int>(widget.jornadaId)],
+    ).getSingleOrNull();
+    int? diaSemana;
+    if (jornadaMeta != null) {
+      final rawFecha = ((jornadaMeta.data['cerrada_en'] as String?) ??
+              (jornadaMeta.data['abierta_en'] as String?) ??
+              '')
+          .trim();
+      final parsed = DateTime.tryParse(rawFecha.replaceFirst(' ', 'T'));
+      diaSemana = parsed?.weekday;
+    }
+
+    final rentabilidadRow = await _db.customSelect(
+      '''
+      SELECT COALESCE(SUM(CASE WHEN prod.costo IS NOT NULL THEN i.cantidad * prod.costo ELSE 0 END), 0) AS costo_total,
+             COALESCE(SUM(CASE WHEN prod.costo IS NOT NULL THEN i.precio * i.cantidad ELSE 0 END), 0) AS venta_con_costo,
+             COUNT(DISTINCT CASE WHEN prod.costo IS NOT NULL THEN i.nombre_producto END) AS prod_con_costo
+      FROM items_pedido i
+      JOIN pedidos p ON p.id = i.pedido_id
+      LEFT JOIN productos prod ON prod.id = i.producto_id
+      WHERE p.jornada_id = ? AND p.estado = 'cerrado'
+      ''',
+      variables: [Variable<int>(widget.jornadaId)],
+    ).getSingle();
+    final costoProductos =
+        (rentabilidadRow.data['costo_total'] as num?)?.toDouble() ?? 0;
+    final ventaConCosto =
+        (rentabilidadRow.data['venta_con_costo'] as num?)?.toDouble() ?? 0;
+    final prodConCosto =
+        (rentabilidadRow.data['prod_con_costo'] as int?) ?? 0;
+    final tieneCostos = prodConCosto > 0;
+    final gananciaReal = ventaConCosto - costoProductos;
+    final margenPct =
+        ventaConCosto > 0 ? (gananciaReal / ventaConCosto) * 100 : 0.0;
+
     if (!mounted) return;
     setState(() {
       _pedidos = pedidos;
+      _jornadaDiaSemana = diaSemana;
       _resumen = _ResumenVentas(
         totalProductos: totalProductos,
         totalDomicilios: totalDomicilios,
@@ -183,6 +223,10 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
         cantTransferencia: cantTransferencia,
         detalleTransferencias: detalleTransferencias,
         cantTransferencias: cantTransferencias,
+        costoProductos: costoProductos,
+        gananciaReal: gananciaReal,
+        margenPct: margenPct,
+        tieneCostos: tieneCostos,
       );
       _loading = false;
     });
@@ -352,6 +396,12 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
     buffer.writeln('----------------------------------------');
     buffer.writeln('TOTAL PRODUCTOS VENDIDOS: ${_formatMoney(totalProductos)}');
     buffer.writeln('TOTAL DOMICILIOS: ${_formatMoney(totalDomicilios)}');
+    if (_resumen.tieneCostos) {
+      buffer.writeln(
+          'COSTO PRODUCTOS (config.): ${_formatMoney(_resumen.costoProductos)}');
+      buffer.writeln(
+          'GANANCIA REAL: ${_formatMoney(_resumen.gananciaReal)} (${_resumen.margenPct.toStringAsFixed(1)}%)');
+    }
     buffer.writeln('----------------------------------------');
     buffer.writeln('VENTAS POR MEDIO DE PAGO:');
     buffer.writeln(
@@ -822,6 +872,74 @@ class _JornadaHistorialScreenState extends State<JornadaHistorialScreen> {
                         ),
                       ),
                       const SizedBox(height: 8),
+                      if (_resumen.tieneCostos) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: (_resumen.gananciaReal >= 0
+                                    ? AppColors.success
+                                    : AppColors.error)
+                                .withValues(alpha: 0.09),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: (_resumen.gananciaReal >= 0
+                                      ? AppColors.success
+                                      : AppColors.error)
+                                  .withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.trending_up_rounded,
+                                size: 18,
+                                color: _resumen.gananciaReal >= 0
+                                    ? AppColors.success
+                                    : AppColors.error,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Ganancia real: ${_formatMoney(_resumen.gananciaReal)} (${_resumen.margenPct.toStringAsFixed(1)}%) · Costo: ${_formatMoney(_resumen.costoProductos)}',
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: _resumen.gananciaReal >= 0
+                                        ? AppColors.success
+                                        : AppColors.error,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => JornadaEstadisticasScreen(
+                                  titulo: widget.jornadaNombre,
+                                  initialJornadaIds: [widget.jornadaId],
+                                  initialRango: 'filtradas',
+                                  initialDiaSemana: _jornadaDiaSemana,
+                                ),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.analytics_outlined, size: 18),
+                          label: const Text(
+                            'Apoyo estadístico, rotación y predicción',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
                       Align(
                         alignment: Alignment.centerLeft,
                         child: Wrap(
@@ -1069,6 +1187,10 @@ class _ResumenVentas {
   final int cantTransferencia;
   final Map<String, double> detalleTransferencias;
   final Map<String, int> cantTransferencias;
+  final double costoProductos;
+  final double gananciaReal;
+  final double margenPct;
+  final bool tieneCostos;
 
   const _ResumenVentas({
     this.totalProductos = 0,
@@ -1084,6 +1206,10 @@ class _ResumenVentas {
     this.cantTransferencia = 0,
     this.detalleTransferencias = const {},
     this.cantTransferencias = const {},
+    this.costoProductos = 0,
+    this.gananciaReal = 0,
+    this.margenPct = 0,
+    this.tieneCostos = false,
   });
 }
 

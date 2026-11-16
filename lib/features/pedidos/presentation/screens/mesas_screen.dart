@@ -15,6 +15,7 @@ import '../../domain/entities/item_pedido.dart';
 import '../../../../core/services/medios_pago_service.dart';
 import '../widgets/dialogo_cobrar_pedido.dart';
 import 'admin_config_screen.dart';
+import 'jornada_estadisticas_screen.dart';
 import 'jornada_historial_screen.dart';
 import 'pedido_screen.dart';
 import 'ticket_preview_screen.dart';
@@ -2316,11 +2317,15 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
           ? true
           : esMismoDia(fechaBase, _fechaCalendarioCerradas!);
 
+      final tresMesesInicio = DateTime(now.year, now.month, now.day)
+          .subtract(const Duration(days: 89));
+
       final matchRango = switch (_rangoCerradas) {
         'hoy' => esMismoDia(fechaBase, now),
         'semana' =>
           !fechaBase.isBefore(weekStart) && fechaBase.isBefore(weekEnd),
         'mes' => fechaBase.year == now.year && fechaBase.month == now.month,
+        '3_meses' => !fechaBase.isBefore(tresMesesInicio),
         _ => true,
       };
 
@@ -2369,6 +2374,15 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                   icon: Icons.calendar_month_rounded,
                   selected: _rangoCerradas == 'mes',
                   onTap: () => setState(() => _rangoCerradas = 'mes'),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _FiltroChip(
+                  label: '3 Meses',
+                  icon: Icons.history_rounded,
+                  selected: _rangoCerradas == '3_meses',
+                  onTap: () => setState(() => _rangoCerradas = '3_meses'),
                 ),
               ),
             ],
@@ -2563,6 +2577,43 @@ class _MesasScreenState extends ConsumerState<MesasScreen> {
                     ),
                   ),
           ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              onPressed: () {
+                final initialRango = switch (_rangoCerradas) {
+                  'semana' => 'semana',
+                  'mes' => 'mes',
+                  '3_meses' => '3_meses',
+                  'todo' => 'todo',
+                  _ => 'filtradas',
+                };
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => JornadaEstadisticasScreen(
+                      titulo:
+                          'Jornadas filtradas (${filtradas.length} jornada${filtradas.length == 1 ? '' : 's'})',
+                      initialJornadaIds: filtradas.map((j) => j.id).toList(),
+                      initialRango: initialRango,
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.analytics_outlined),
+              label: const Text(
+                'Apoyo estadístico, rotación y ganancia',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
         ],
       ),
     );
