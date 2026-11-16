@@ -1,4 +1,4 @@
-package com.example.barril_app
+﻿package com.example.barril_app
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -26,13 +26,13 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Foreground Service que mantiene el socket Bluetooth SPP activo y procesa
- * trabajos de impresión aunque la app esté en segundo plano o minimizada.
+ * trabajos de impresiÃ³n aunque la app estÃ© en segundo plano o minimizada.
  *
  * Arquitectura:
  * - Un hilo trabajador bloquea en printQueue.take() esperando jobs
  * - Cada job se ejecuta con pre-flush del firmware (modo papel continuo)
- * - WakeLock evita que el CPU duerma durante la impresión
- * - Notificación persistente (requerida por Android para foreground services)
+ * - WakeLock evita que el CPU duerma durante la impresiÃ³n
+ * - NotificaciÃ³n persistente (requerida por Android para foreground services)
  */
 class PrinterForegroundService : Service() {
 
@@ -43,13 +43,13 @@ class PrinterForegroundService : Service() {
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     }
 
-    // ── Binder para que MainActivity se comunique con el servicio ──────────
+    // â”€â”€ Binder para que MainActivity se comunique con el servicio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     inner class PrinterBinder : Binder() {
         fun getService(): PrinterForegroundService = this@PrinterForegroundService
     }
     private val binder = PrinterBinder()
 
-    // ── Estado interno ─────────────────────────────────────────────────────
+    // â”€â”€ Estado interno â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     data class PrintJob(
         val address: String,
         val bytes: ByteArray,
@@ -64,9 +64,9 @@ class PrinterForegroundService : Service() {
     private var workerThread: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
-    // ──────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Ciclo de vida del Service
-    // ──────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     override fun onCreate() {
         super.onCreate()
@@ -105,9 +105,9 @@ class PrinterForegroundService : Service() {
         super.onDestroy()
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // API pública (llamada desde MainActivity a través del Binder)
-    // ──────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // API pÃºblica (llamada desde MainActivity a travÃ©s del Binder)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fun connect(address: String): Boolean {
         return try {
@@ -136,8 +136,8 @@ class PrinterForegroundService : Service() {
     }
 
     /**
-     * Encola un job de impresión. El hilo trabajador lo procesará aunque la
-     * app esté en segundo plano. El callback se ejecuta en el hilo del worker.
+     * Encola un job de impresiÃ³n. El hilo trabajador lo procesarÃ¡ aunque la
+     * app estÃ© en segundo plano. El callback se ejecuta en el hilo del worker.
      */
     fun enqueuePrint(address: String, bytes: ByteArray, callback: (Boolean, String?) -> Unit) {
         printQueue.offer(PrintJob(address, bytes, callback))
@@ -145,14 +145,14 @@ class PrinterForegroundService : Service() {
         Log.d(TAG, "Job encolado para $address (${bytes.size} bytes), cola: ${printQueue.size}")
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Hilo trabajador de impresión
-    // ──────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Hilo trabajador de impresiÃ³n
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private fun startWorker() {
         workerRunning = true
         workerThread = Thread {
-            Log.i(TAG, "Worker de impresión iniciado")
+            Log.i(TAG, "Worker de impresiÃ³n iniciado")
             while (workerRunning && !Thread.currentThread().isInterrupted) {
                 try {
                     val job = printQueue.take()   // bloquea hasta que llegue un job
@@ -164,7 +164,7 @@ class PrinterForegroundService : Service() {
                     Log.e(TAG, "Error inesperado en worker", e)
                 }
             }
-            Log.i(TAG, "Worker de impresión terminado")
+            Log.i(TAG, "Worker de impresiÃ³n terminado")
         }.also {
             it.isDaemon = false     // hilo NO daemon: el SO no lo mata en background
             it.name = "PrinterWorker"
@@ -174,11 +174,11 @@ class PrinterForegroundService : Service() {
 
     private fun processJob(job: PrintJob) {
         Log.d(TAG, "Procesando job para ${job.address} (${job.bytes.size} bytes)")
-        acquireWakeLock(15000L) // Despierta el CPU sólo durante el envío del ticket (máx 15s)
+        acquireWakeLock(15000L) // Despierta el CPU sÃ³lo durante el envÃ­o del ticket (mÃ¡x 15s)
         try {
-            // Reconectar si el socket se cerró mientras estaba en background
+            // Reconectar si el socket se cerrÃ³ mientras estaba en background
             if (activeSocket?.isConnected != true || activeAddress != job.address) {
-                Log.d(TAG, "Socket caído, reconectando a ${job.address}...")
+                Log.d(TAG, "Socket caÃ­do, reconectando a ${job.address}...")
                 openSocket(job.address)
                 updateNotification("Reconectando impresora...")
             }
@@ -188,7 +188,7 @@ class PrinterForegroundService : Service() {
                 out.write(job.bytes)
                 out.flush()
             } catch (writeError: Exception) {
-                // Si el socket quedó obsoleto tras inactividad, reabrir y reintentar una vez
+                // Si el socket quedÃ³ obsoleto tras inactividad, reabrir y reintentar una vez
                 Log.w(TAG, "Socket obsoleto al escribir (${writeError.message}), reabriendo SPP...")
                 closeSocket()
                 openSocket(job.address)
@@ -197,66 +197,23 @@ class PrinterForegroundService : Service() {
                 outRetry.flush()
             }
 
-            Log.i(TAG, "✓ Job impreso exitosamente para ${job.address}")
-            updateNotification("Ticket impreso correctamente ✓")
+            Log.i(TAG, "âœ“ Job impreso exitosamente para ${job.address}")
+            updateNotification("Ticket impreso correctamente âœ“")
             job.callback(true, null)
 
         } catch (e: Exception) {
-            Log.e(TAG, "✗ Error imprimiendo job para ${job.address}", e)
+            Log.e(TAG, "âœ— Error imprimiendo job para ${job.address}", e)
             closeSocket()
-            updateNotification("Error al imprimir — reintentando conexión")
-            job.callback(false, e.message ?: "Error de impresión")
+            updateNotification("Error al imprimir â€” reintentando conexiÃ³n")
+            job.callback(false, e.message ?: "Error de impresiÃ³n")
         } finally {
             releaseWakeLock()
         }
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Gestión del socket Bluetooth SPP
-    // ──────────────────────────────────────────────────────────────────────
-
-    private fun ensureBonded(device: BluetoothDevice) {
-        if (device.bondState == BluetoothDevice.BOND_BONDED) return
-        if (device.bondState == BluetoothDevice.BOND_BONDING) {
-            Thread.sleep(1500)
-            return
-        }
-
-        val latch = CountDownLatch(1)
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-                val dev = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                }
-                if (dev?.address?.equals(device.address, ignoreCase = true) == true) {
-                    val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
-                    if (state == BluetoothDevice.BOND_BONDED || state == BluetoothDevice.BOND_NONE) {
-                        latch.countDown()
-                    }
-                }
-            }
-        }
-
-        try {
-            val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
-            } else {
-                registerReceiver(receiver, filter)
-            }
-            Log.i(TAG, "Iniciando vinculación permanente (createBond) con ${device.address}...")
-            device.createBond()
-            latch.await(15, TimeUnit.SECONDS)
-        } catch (e: Exception) {
-            Log.w(TAG, "Aviso durante createBond: ${e.message}")
-        } finally {
-            try { unregisterReceiver(receiver) } catch (_: Exception) {}
-        }
-    }
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // GestiÃ³n del socket Bluetooth SPP
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private fun openSocket(address: String) {
         val adapter = BluetoothAdapter.getDefaultAdapter()
@@ -264,52 +221,42 @@ class PrinterForegroundService : Service() {
         adapter.cancelDiscovery()
         val device: BluetoothDevice = adapter.getRemoteDevice(address)
 
-        // Si el dispositivo aún no está vinculado permanentemente, vincular una sola vez
-        ensureBonded(device)
-
+        // IMPORTANTE: NUNCA se llama createBond() ni se abre un socket seguro si el
+        // dispositivo no está vinculado: eso hace que Android muestre el diálogo
+        // "¿Vincular con ...?". Se usa sólo socket inseguro (no requiere emparejar).
         var socket: BluetoothSocket? = null
-        val yaVinculado = device.bondState == BluetoothDevice.BOND_BONDED
-
-        if (yaVinculado) {
+        try {
+            Log.d(TAG, "Intentando socket inseguro (SPP UUID) para $address")
+            socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
+            socket.connect()
+            Log.i(TAG, "Conectado vía Insecure SPP UUID")
+        } catch (e1: Exception) {
+            Log.w(TAG, "Fallo Insecure SPP: ${e1.message}")
+            try { socket?.close() } catch (_: Exception) {}
+            socket = null
             try {
-                Log.d(TAG, "Intentando socket seguro SPP (dispositivo vinculado) para $address")
-                socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                Log.d(TAG, "Intentando canal 1 inseguro por reflexión...")
+                val method = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+                socket = method.invoke(device, 1) as BluetoothSocket
                 socket.connect()
-                Log.i(TAG, "Conectado vía Socket Seguro (sin diálogo)")
-            } catch (eSecure: Exception) {
-                Log.w(TAG, "Fallo Socket Seguro en vinculado: ${eSecure.message}")
+                Log.i(TAG, "Conectado vía Canal 1 Inseguro")
+            } catch (e2: Exception) {
+                Log.w(TAG, "Fallo Canal Inseguro: ${e2.message}")
                 try { socket?.close() } catch (_: Exception) {}
                 socket = null
-            }
-        }
-
-        if (socket == null) {
-            try {
-                Log.d(TAG, "Intentando socket inseguro (SPP UUID) para $address")
-                socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-                socket.connect()
-                Log.i(TAG, "Conectado vía Insecure SPP UUID")
-            } catch (e1: Exception) {
-                Log.w(TAG, "Fallo Insecure SPP: ${e1.message}")
-                try { socket?.close() } catch (_: Exception) {}
-                try {
-                    Log.d(TAG, "Intentando canal 1 inseguro por reflexión...")
-                    val method = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                    socket = method.invoke(device, 1) as BluetoothSocket
-                    socket.connect()
-                    Log.i(TAG, "Conectado vía Canal 1 Inseguro")
-                } catch (e2: Exception) {
-                    Log.w(TAG, "Fallo Canal Inseguro: ${e2.message}")
-                    try { socket?.close() } catch (_: Exception) {}
+                if (device.bondState == BluetoothDevice.BOND_BONDED) {
                     try {
-                        Log.d(TAG, "Intentando socket seguro como último recurso...")
+                        Log.d(TAG, "Intentando socket seguro (ya vinculado, sin diálogo)...")
                         socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
                         socket.connect()
                         Log.i(TAG, "Conectado vía Socket Seguro")
                     } catch (e3: Exception) {
                         Log.w(TAG, "Fallo Socket Seguro: ${e3.message}")
+                        try { socket?.close() } catch (_: Exception) {}
                         throw e3
                     }
+                } else {
+                    throw e2
                 }
             }
         }
@@ -325,9 +272,9 @@ class PrinterForegroundService : Service() {
         Log.d(TAG, "Socket cerrado")
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // WakeLock — evita que el CPU duerma exclusivamente durante impresión
-    // ──────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // WakeLock â€” evita que el CPU duerma exclusivamente durante impresiÃ³n
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private fun acquireWakeLock(timeoutMs: Long = 15000L) {
         try {
@@ -354,18 +301,18 @@ class PrinterForegroundService : Service() {
         } catch (_: Exception) {}
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Notificación persistente
-    // ──────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // NotificaciÃ³n persistente
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Servicio de Impresión",
+                "Servicio de ImpresiÃ³n",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Mantiene la conexión con la impresora térmica en segundo plano"
+                description = "Mantiene la conexiÃ³n con la impresora tÃ©rmica en segundo plano"
                 setShowBadge(false)
                 enableVibration(false)
                 setSound(null, null)
@@ -385,9 +332,9 @@ class PrinterForegroundService : Service() {
 
         // NotificationCompat funciona en todas las versiones de API de forma uniforme
         return androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Barril App — Impresora")
+            .setContentTitle("Barril App â€” Impresora")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_download)  // ícono disponible en todas las API
+            .setSmallIcon(android.R.drawable.stat_sys_download)  // Ã­cono disponible en todas las API
             .setContentIntent(pi)
             .setOngoing(true)          // no se puede deslizar para cerrar
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)

@@ -175,25 +175,6 @@ class BluetoothPrinterService {
     return lista;
   }
 
-  Future<bool> _isBondedInAndroid(String address) async {
-    if (!Platform.isAndroid || address.trim().isEmpty) return false;
-    try {
-      final List<dynamic>? bondedNative =
-          await _channel.invokeMethod<List<dynamic>>('getBondedDevices');
-      if (bondedNative == null) return false;
-      final clean = address.trim().toUpperCase();
-      return bondedNative.any((item) {
-        if (item is Map) {
-          final addr = ((item['address'] as String?) ?? '').trim().toUpperCase();
-          return addr == clean;
-        }
-        return false;
-      });
-    } catch (_) {
-      return false;
-    }
-  }
-
   /// Reconstruye un [BluetoothDevice] a partir de un remoteId guardado y abre la conexión serie persistente.
   Future<BluetoothDevice?> connect(String remoteId) async {
     final cleanId = remoteId.trim();
@@ -215,11 +196,8 @@ class BluetoothPrinterService {
           debugPrint('Aviso SPP connect para $cleanId: $e');
         }
 
-        // Si ya está vinculada por Bluetooth Classic, no abrir conexión BLE adicional
-        // (evita que Android muestre el diálogo "¿Vincular con ...?" repetidamente).
-        if (await _isBondedInAndroid(cleanId)) {
-          return device;
-        }
+        // En Android con impresora Classic nunca se abre BLE GATT (dispara "¿Vincular?").
+        return device;
       }
 
       // 2. Fallback o conexión explícita BLE
@@ -279,30 +257,29 @@ class BluetoothPrinterService {
       return _printBytesBle(device, bytes);
     }
 
-    // 2. Intentar impresión por Bluetooth Classic (SPP) si estamos en Android
+    // 2. Intentar impresión por Bluetooth Classic (SPP) si estamos en Android.
+    // Se reintenta una vez (el socket puede haber quedado obsoleto) y NUNCA se cae
+    // a BLE GATT: abrir GATT hace que Android muestre "¿Vincular con ...?" en cada impresión.
     if (Platform.isAndroid && address.isNotEmpty) {
-      try {
-        debugPrint('Intentando imprimir vía Bluetooth Classic (SPP) en $address...');
-        final bool? exitoSpp = await _channel.invokeMethod<bool>('printViaClassicSpp', {
-          'address': address,
-          'bytes': Uint8List.fromList(bytes),
-        }).timeout(const Duration(seconds: 15), onTimeout: () => false);
-        if (exitoSpp == true) {
-          debugPrint('¡Impresión por Bluetooth Classic (SPP) exitosa!');
-          return true;
+      for (var intento = 0; intento < 2; intento++) {
+        try {
+          debugPrint('Imprimiendo vía Bluetooth Classic (SPP) en $address (intento ${intento + 1})...');
+          final bool? exitoSpp = await _channel.invokeMethod<bool>('printViaClassicSpp', {
+            'address': address,
+            'bytes': Uint8List.fromList(bytes),
+          }).timeout(const Duration(seconds: 15), onTimeout: () => false);
+          if (exitoSpp == true) {
+            return true;
+          }
+        } catch (e) {
+          debugPrint('Falló impresión SPP Classic: $e');
         }
-      } catch (e) {
-        debugPrint('Falló impresión SPP Classic: $e');
+        await Future.delayed(const Duration(milliseconds: 600));
       }
-
-      // Si es una impresora Classic ya vinculada, no caer a BLE GATT para evitar
-      // solicitudes repetidas de vinculación ("¿Vincular con ...?").
-      if (await _isBondedInAndroid(address)) {
-        return false;
-      }
+      return false;
     }
 
-    // 3. Fallback inmediato a BLE GATT
+    // 3. Otras plataformas: BLE GATT
     return _printBytesBle(device, bytes);
   }
 
