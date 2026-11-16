@@ -7,7 +7,10 @@ import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
@@ -17,7 +20,9 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.io.OutputStream
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Foreground Service que mantiene el socket Bluetooth SPP activo y procesa
@@ -178,11 +183,19 @@ class PrinterForegroundService : Service() {
                 updateNotification("Reconectando impresora...")
             }
 
-            val out: OutputStream = activeSocket!!.outputStream
-
-            // ── JOB PRINCIPAL (Generado dinámicamente en Dart con ESC/POS puro) ──
-            out.write(job.bytes)
-            out.flush()
+            try {
+                val out: OutputStream = activeSocket!!.outputStream
+                out.write(job.bytes)
+                out.flush()
+            } catch (writeError: Exception) {
+                // Si el socket quedó obsoleto tras inactividad, reabrir y reintentar una vez
+                Log.w(TAG, "Socket obsoleto al escribir (${writeError.message}), reabriendo SPP...")
+                closeSocket()
+                openSocket(job.address)
+                val outRetry: OutputStream = activeSocket!!.outputStream
+                outRetry.write(job.bytes)
+                outRetry.flush()
+            }
 
             Log.i(TAG, "✓ Job impreso exitosamente para ${job.address}")
             updateNotification("Ticket impreso correctamente ✓")
@@ -202,36 +215,101 @@ class PrinterForegroundService : Service() {
     // Gestión del socket Bluetooth SPP
     // ──────────────────────────────────────────────────────────────────────
 
+    private fun ensureBonded(device: BluetoothDevice) {
+        if (device.bondState == BluetoothDevice.BOND_BONDED) return
+        if (device.bondState == BluetoothDevice.BOND_BONDING) {
+            Thread.sleep(1500)
+            return
+        }
+
+        val latch = CountDownLatch(1)
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+                val dev = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                }
+                if (dev?.address?.equals(device.address, ignoreCase = true) == true) {
+                    val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                    if (state == BluetoothDevice.BOND_BONDED || state == BluetoothDevice.BOND_NONE) {
+                        latch.countDown()
+                    }
+                }
+            }
+        }
+
+        try {
+            val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(receiver, filter)
+            }
+            Log.i(TAG, "Iniciando vinculación permanente (createBond) con ${device.address}...")
+            device.createBond()
+            latch.await(15, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            Log.w(TAG, "Aviso durante createBond: ${e.message}")
+        } finally {
+            try { unregisterReceiver(receiver) } catch (_: Exception) {}
+        }
+    }
+
     private fun openSocket(address: String) {
         val adapter = BluetoothAdapter.getDefaultAdapter()
             ?: throw IllegalStateException("Bluetooth no disponible")
         adapter.cancelDiscovery()
         val device: BluetoothDevice = adapter.getRemoteDevice(address)
 
+        // Si el dispositivo aún no está vinculado permanentemente, vincular una sola vez
+        ensureBonded(device)
+
         var socket: BluetoothSocket? = null
-        try {
-            Log.d(TAG, "Intentando socket inseguro (SPP UUID) para $address")
-            socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-            socket.connect()
-            Log.i(TAG, "Conectado vía Insecure SPP UUID")
-        } catch (e1: Exception) {
-            Log.w(TAG, "Fallo Insecure SPP: ${e1.message}")
+        val yaVinculado = device.bondState == BluetoothDevice.BOND_BONDED
+
+        if (yaVinculado) {
             try {
-                Log.d(TAG, "Intentando canal 1 inseguro por reflexión...")
-                val method = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                socket = method.invoke(device, 1) as BluetoothSocket
+                Log.d(TAG, "Intentando socket seguro SPP (dispositivo vinculado) para $address")
+                socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
                 socket.connect()
-                Log.i(TAG, "Conectado vía Canal 1 Inseguro")
-            } catch (e2: Exception) {
-                Log.w(TAG, "Fallo Canal Inseguro: ${e2.message}")
+                Log.i(TAG, "Conectado vía Socket Seguro (sin diálogo)")
+            } catch (eSecure: Exception) {
+                Log.w(TAG, "Fallo Socket Seguro en vinculado: ${eSecure.message}")
+                try { socket?.close() } catch (_: Exception) {}
+                socket = null
+            }
+        }
+
+        if (socket == null) {
+            try {
+                Log.d(TAG, "Intentando socket inseguro (SPP UUID) para $address")
+                socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
+                socket.connect()
+                Log.i(TAG, "Conectado vía Insecure SPP UUID")
+            } catch (e1: Exception) {
+                Log.w(TAG, "Fallo Insecure SPP: ${e1.message}")
+                try { socket?.close() } catch (_: Exception) {}
                 try {
-                    Log.d(TAG, "Intentando socket seguro como último recurso...")
-                    socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                    Log.d(TAG, "Intentando canal 1 inseguro por reflexión...")
+                    val method = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+                    socket = method.invoke(device, 1) as BluetoothSocket
                     socket.connect()
-                    Log.i(TAG, "Conectado vía Socket Seguro")
-                } catch (e3: Exception) {
-                    Log.w(TAG, "Fallo Socket Seguro: ${e3.message}")
-                    throw e3
+                    Log.i(TAG, "Conectado vía Canal 1 Inseguro")
+                } catch (e2: Exception) {
+                    Log.w(TAG, "Fallo Canal Inseguro: ${e2.message}")
+                    try { socket?.close() } catch (_: Exception) {}
+                    try {
+                        Log.d(TAG, "Intentando socket seguro como último recurso...")
+                        socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                        socket.connect()
+                        Log.i(TAG, "Conectado vía Socket Seguro")
+                    } catch (e3: Exception) {
+                        Log.w(TAG, "Fallo Socket Seguro: ${e3.message}")
+                        throw e3
+                    }
                 }
             }
         }
